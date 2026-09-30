@@ -1,6 +1,0 @@
-{
-  "name": "Chairfill HIPAA-Compliant Dental Scheduling & Recovery",
-  "description": "HIPAA-compliant dental scheduling and chair recovery platform with encrypted ePHI safeguards, automated audit logging, privacy screen shielding, session auto-lock, and TCPA-compliant patient booking.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
