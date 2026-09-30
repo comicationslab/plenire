@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { useHIPAA } from '../../context/HIPAAContext';
-import { PRACTICES } from '../../data/initialData';
+import { usePractice } from '../../context/PracticeContext';
+import { bookingRef as makeBookingRef, initialsOf, todayShort, uid } from '../../lib/format';
+import { TCPA_CONSENT_STATEMENT } from '../../services/hipaaCompliance';
 import { Appointment, Patient } from '../../types/hipaa';
 
 interface CleanBookingProps {
@@ -10,14 +12,13 @@ interface CleanBookingProps {
 
 export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) => {
   const { logAudit } = useHIPAA();
-  const practice = PRACTICES['lakeside-dental'];
+  const { practice } = usePractice();
 
   const [step, setStep] = useState(1);
   const [visitType, setVisitType] = useState<any>(null);
   const [provider, setProvider] = useState('any');
   const [date, setDate] = useState<string | null>(null);
   const [time, setTime] = useState<string | null>(null);
-  const [assignedProviderId, setAssignedProviderId] = useState<string | null>(null);
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -27,6 +28,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
   const [notes, setNotes] = useState('');
   const [consent, setConsent] = useState(false);
   const [bookingRef, setBookingRef] = useState('');
+  const [bookedWith, setBookedWith] = useState('');
 
   const [notifEmail, setNotifEmail] = useState(false);
   const [notifSms, setNotifSms] = useState(false);
@@ -66,25 +68,26 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
       setStep((s) => s + 1);
       window.scrollTo(0, 0);
     } else {
-      const ref = 'CF-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+      const ref = makeBookingRef();
       setBookingRef(ref);
 
       const resolvedProvider =
         provider === 'any'
-          ? 'Dr. Mensah'
-          : practice.providers.find((p) => p.id === provider)?.name || 'Dr. Mensah';
+          ? (practice.providers.find((p) => p.op)?.name ?? 'Your provider')
+          : practice.providers.find((p) => p.id === provider)?.name || (practice.providers.find((p) => p.op)?.name ?? 'Your provider');
+      setBookedWith(resolvedProvider);
 
       const [h, m] = (time || '09:30').split(':').map(Number);
       const mins = h * 60 + m;
       const formatted = `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
 
       const newAppt: Appointment = {
-        id: `appt-web-${Date.now()}`,
+        id: uid('appt'),
         time: formatted,
         mins,
         dur: visitType.duration,
         patient: `${firstName} ${lastName}`,
-        initials: (firstName[0] + lastName[0]).toUpperCase(),
+        initials: initialsOf(`${firstName} ${lastName}`),
         provider: resolvedProvider,
         op: 'Op 1',
         treatment: visitType.name,
@@ -92,12 +95,12 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
       };
 
       const newPat: Patient = {
-        id: `p-${Date.now()}`,
+        id: uid('p'),
         name: `${firstName} ${lastName}`,
-        initials: (firstName[0] + lastName[0]).toUpperCase(),
+        initials: initialsOf(`${firstName} ${lastName}`),
         phone,
         email,
-        lastVisit: date || 'Jun 30, 2026',
+        lastVisit: date || todayShort(practice.timezone),
         recentVisit: `${visitType.name} · ${formatted}`,
         status: 'Active',
         smsConsent: consent,
@@ -130,11 +133,11 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               <div className="w-[34px] h-[34px] rounded-full border border-[#1e2a28] flex items-center justify-center font-bold text-[13px]">
-                LD
+                {practice.initials}
               </div>
               <div>
-                <div className="font-bold text-[15px] leading-tight">Lakeside Dental</div>
-                <div className="text-[12px] text-[#1e2a28]/55 mt-0.5">Book your visit — takes about a minute</div>
+                <div className="font-bold text-[15px] leading-tight">{practice.name}</div>
+                <div className="text-[12px] text-[#1e2a28]/70 mt-0.5">Book your visit — takes about a minute</div>
               </div>
             </div>
             <button
@@ -152,7 +155,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
             {step > 1 && (
               <button
                 onClick={() => setStep((s) => s - 1)}
-                className="text-[13px] font-semibold text-[#1e2a28]/60 hover:text-[#1e2a28] mb-2 flex items-center gap-1"
+                className="text-[13px] font-semibold text-[#1e2a28]/70 hover:text-[#1e2a28] mb-2 flex items-center gap-1"
               >
                 ‹ Back
               </button>
@@ -163,7 +166,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                 style={{ width: `${(step / 4) * 100}%` }}
               />
             </div>
-            <div className="flex justify-between text-[10px] text-[#a3533a] my-2 uppercase font-bold tracking-widest">
+            <div className="flex justify-between text-[11px] text-[#a3533a] my-2 uppercase font-bold tracking-widest">
               <span>Step {step} of 4</span>
               <span>{['', 'Visit', 'Time', 'Details', 'Review'][step]}</span>
             </div>
@@ -176,9 +179,9 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
           {step === 1 && (
             <div className="space-y-4">
               <h1 className="text-[23px] font-medium tracking-tight m-0">What can we help with?</h1>
-              <p className="text-[13px] text-[#1e2a28]/60 m-0">Pick a visit type, then choose who you&apos;d like to see.</p>
+              <p className="text-[13px] text-[#1e2a28]/70 m-0">Pick a visit type, then choose who you&apos;d like to see.</p>
 
-              <div className="text-[10px] uppercase font-bold text-[#a3533a] tracking-widest pt-2">Visit type</div>
+              <div className="text-[11px] uppercase font-bold text-[#a3533a] tracking-widest pt-2">Visit type</div>
               <div className="grid grid-cols-2 gap-2.5">
                 {practice.visitTypes.map((t) => (
                   <button
@@ -191,7 +194,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                     }`}
                   >
                     <span className="font-semibold text-[13.5px] leading-tight">{t.name}</span>
-                    <span className={`text-[11px] ${visitType?.id === t.id ? 'text-[#f4f0e8]/75' : 'text-[#1e2a28]/55'}`}>
+                    <span className={`text-[11px] ${visitType?.id === t.id ? 'text-[#f4f0e8]/75' : 'text-[#1e2a28]/70'}`}>
                       ~{t.duration} min
                     </span>
                   </button>
@@ -200,7 +203,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
 
               {visitType && (
                 <div className="space-y-2 pt-3">
-                  <div className="text-[10px] uppercase font-bold text-[#a3533a] tracking-widest">Provider</div>
+                  <div className="text-[11px] uppercase font-bold text-[#a3533a] tracking-widest">Provider</div>
                   <div className="space-y-2">
                     <button
                       onClick={() => setProvider('any')}
@@ -215,11 +218,11 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-[13.5px]">Any available provider</div>
-                        <div className={`text-[11px] ${provider === 'any' ? 'text-[#f4f0e8]/75' : 'text-[#1e2a28]/55'}`}>
+                        <div className={`text-[11px] ${provider === 'any' ? 'text-[#f4f0e8]/75' : 'text-[#1e2a28]/70'}`}>
                           We&apos;ll match you to the soonest opening
                         </div>
                       </div>
-                      <span className="text-[9px] uppercase font-bold tracking-wider border border-current px-2 py-0.5 rounded-full">
+                      <span className="text-[11px] uppercase font-bold tracking-wider border border-current px-2 py-0.5 rounded-full">
                         Fastest
                       </span>
                     </button>
@@ -241,7 +244,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="font-semibold text-[13.5px]">{p.name}</div>
-                            <div className={`text-[11px] ${provider === p.id ? 'text-[#f4f0e8]/75' : 'text-[#1e2a28]/55'}`}>
+                            <div className={`text-[11px] ${provider === p.id ? 'text-[#f4f0e8]/75' : 'text-[#1e2a28]/70'}`}>
                               {p.role}
                             </div>
                           </div>
@@ -257,9 +260,9 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
           {step === 2 && (
             <div className="space-y-4">
               <h1 className="text-[23px] font-medium tracking-tight m-0">Choose a time</h1>
-              <p className="text-[13px] text-[#1e2a28]/60 m-0">{visitType?.name}</p>
+              <p className="text-[13px] text-[#1e2a28]/70 m-0">{visitType?.name}</p>
 
-              <div className="flex items-center gap-2 text-[11px] text-[#1e2a28]/55">
+              <div className="flex items-center gap-2 text-[11px] text-[#1e2a28]/70">
                 <span className="w-2 h-2 rounded-full bg-[#a3533a] inline-block animate-pulse" />
                 <span>Live availability, synced with the practice calendar</span>
               </div>
@@ -279,8 +282,8 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                         : 'border-[#1e2a28]/16 bg-[#f4f0e8] hover:border-[#1e2a28]'
                     }`}
                   >
-                    <div className="text-[10px] font-bold uppercase">{d.dow}</div>
-                    <div className="text-[16px] font-bold font-mono mt-0.5">{d.num}</div>
+                    <div className="text-[11px] font-bold uppercase">{d.dow}</div>
+                    <div className="text-[16px] font-bold tabular-nums mt-0.5">{d.num}</div>
                     <div className={`w-1 h-1 rounded-full mx-auto mt-1 ${date === d.iso ? 'bg-[#f4f0e8]' : 'bg-[#a3533a]'}`} />
                   </button>
                 ))}
@@ -294,7 +297,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                     <button
                       key={s.time}
                       onClick={() => setTime(s.time)}
-                      className={`p-2.5 text-center border text-[12.5px] font-semibold font-mono transition-colors ${
+                      className={`p-2.5 text-center border text-[12.5px] font-semibold tabular-nums transition-colors ${
                         time === s.time
                           ? 'border-[#1e2a28] bg-[#1e2a28] text-[#f4f0e8]'
                           : 'border-[#1e2a28]/16 bg-[#f4f0e8] hover:border-[#1e2a28]'
@@ -312,12 +315,12 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
           {step === 3 && (
             <div className="space-y-3.5">
               <h1 className="text-[23px] font-medium tracking-tight m-0">Your details</h1>
-              <p className="text-[13px] text-[#1e2a28]/60 m-0">We&apos;ll send your confirmation to the contact info below.</p>
+              <p className="text-[13px] text-[#1e2a28]/70 m-0">We&apos;ll send your confirmation to the contact info below.</p>
 
               <div className="grid grid-cols-2 gap-2.5 pt-2">
                 <div>
-                  <label className="block text-[12px] font-semibold mb-1">First name</label>
-                  <input
+                  <label htmlFor="f-cleanbooking-13922" className="block text-[12px] font-semibold mb-1">First name</label>
+                  <input id="f-cleanbooking-13922"
                     type="text"
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
@@ -326,8 +329,8 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                   />
                 </div>
                 <div>
-                  <label className="block text-[12px] font-semibold mb-1">Last name</label>
-                  <input
+                  <label htmlFor="f-cleanbooking-14421" className="block text-[12px] font-semibold mb-1">Last name</label>
+                  <input id="f-cleanbooking-14421"
                     type="text"
                     value={lastName}
                     onChange={(e) => setLastName(e.target.value)}
@@ -338,8 +341,8 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
               </div>
 
               <div>
-                <label className="block text-[12px] font-semibold mb-1">Mobile number</label>
-                <input
+                <label htmlFor="f-cleanbooking-14934" className="block text-[12px] font-semibold mb-1">Mobile number</label>
+                <input id="f-cleanbooking-14934"
                   type="tel"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
@@ -349,8 +352,8 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
               </div>
 
               <div>
-                <label className="block text-[12px] font-semibold mb-1">Email</label>
-                <input
+                <label htmlFor="f-cleanbooking-15416" className="block text-[12px] font-semibold mb-1">Email</label>
+                <input id="f-cleanbooking-15416"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -360,7 +363,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
               </div>
 
               <div className="pt-1">
-                <label className="block text-[10px] uppercase font-bold text-[#a3533a] tracking-widest mb-1.5">
+                <label className="block text-[11px] uppercase font-bold text-[#a3533a] tracking-widest mb-1.5">
                   Are you a new or returning patient?
                 </label>
                 <div className="flex gap-2">
@@ -391,7 +394,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
 
               <div>
                 <label className="block text-[12px] font-semibold mb-1">
-                  Scheduling notes <span className="font-normal text-[#1e2a28]/55">(optional; please don&apos;t include health details)</span>
+                  Scheduling notes <span className="font-normal text-[#1e2a28]/70">(optional; please don&apos;t include health details)</span>
                 </label>
                 <textarea
                   value={notes}
@@ -409,11 +412,11 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                   onChange={(e) => setConsent(e.target.checked)}
                   className="mt-1 accent-[#1e2a28]"
                 />
-                <p className="text-[12px] text-[#1e2a28]/60 m-0 leading-relaxed">
-                  Yes, text me appointment confirmations, reminders, and earlier-opening offers from Lakeside Dental at the mobile number above. Reply STOP to opt out. Consent is not a condition of booking.
+                <p className="text-[12px] text-[#1e2a28]/70 m-0 leading-relaxed">
+                  {TCPA_CONSENT_STATEMENT(practice.name)}
                 </p>
               </div>
-              <p className="text-[11px] text-[#1e2a28]/55 m-0">Optional. We&apos;ll always email your confirmation.</p>
+              <p className="text-[11px] text-[#1e2a28]/70 m-0">Optional. We&apos;ll always email your confirmation.</p>
             </div>
           )}
 
@@ -421,57 +424,57 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
           {step === 4 && (
             <div className="space-y-4">
               <h1 className="text-[23px] font-medium tracking-tight m-0">Review your booking</h1>
-              <p className="text-[13px] text-[#1e2a28]/60 m-0">Double check the details below, then confirm.</p>
+              <p className="text-[13px] text-[#1e2a28]/70 m-0">Double check the details below, then confirm.</p>
 
               <div className="border border-[#1e2a28]/16 p-4 space-y-2 text-xs">
-                <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-widest text-[#1e2a28]/55">
+                <div className="flex justify-between items-center text-[11px] font-bold uppercase tracking-widest text-[#1e2a28]/70">
                   <span>Visit</span>
                   <button onClick={() => setStep(1)} className="text-[#a3533a]">Edit</button>
                 </div>
                 <div className="flex justify-between border-b border-[#1e2a28]/12 pb-2">
-                  <span className="text-[#1e2a28]/55">Type</span>
+                  <span className="text-[#1e2a28]/70">Type</span>
                   <strong className="font-semibold">{visitType?.name}</strong>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-[#1e2a28]/55">Provider</span>
+                  <span className="text-[#1e2a28]/70">Provider</span>
                   <strong className="font-semibold">{provider === 'any' ? 'Any available provider' : provider}</strong>
                 </div>
               </div>
 
               <div className="border border-[#1e2a28]/16 p-4 space-y-2 text-xs">
-                <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-widest text-[#1e2a28]/55">
+                <div className="flex justify-between items-center text-[11px] font-bold uppercase tracking-widest text-[#1e2a28]/70">
                   <span>Time</span>
                   <button onClick={() => setStep(2)} className="text-[#a3533a]">Edit</button>
                 </div>
                 <div className="flex justify-between border-b border-[#1e2a28]/12 pb-2">
-                  <span className="text-[#1e2a28]/55">Date</span>
+                  <span className="text-[#1e2a28]/70">Date</span>
                   <strong className="font-semibold">{date}</strong>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-[#1e2a28]/55">Time</span>
+                  <span className="text-[#1e2a28]/70">Time</span>
                   <strong className="font-semibold">{time}</strong>
                 </div>
               </div>
 
               <div className="border border-[#1e2a28]/16 p-4 space-y-2 text-xs">
-                <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-widest text-[#1e2a28]/55">
+                <div className="flex justify-between items-center text-[11px] font-bold uppercase tracking-widest text-[#1e2a28]/70">
                   <span>Contact</span>
                   <button onClick={() => setStep(3)} className="text-[#a3533a]">Edit</button>
                 </div>
                 <div className="flex justify-between border-b border-[#1e2a28]/12 pb-2">
-                  <span className="text-[#1e2a28]/55">Name</span>
+                  <span className="text-[#1e2a28]/70">Name</span>
                   <strong className="font-semibold">{firstName} {lastName}</strong>
                 </div>
                 <div className="flex justify-between border-b border-[#1e2a28]/12 pb-2">
-                  <span className="text-[#1e2a28]/55">Phone</span>
-                  <strong className="font-semibold font-mono">{phone}</strong>
+                  <span className="text-[#1e2a28]/70">Phone</span>
+                  <strong className="font-semibold tabular-nums">{phone}</strong>
                 </div>
                 <div className="flex justify-between border-b border-[#1e2a28]/12 pb-2">
-                  <span className="text-[#1e2a28]/55">Email</span>
+                  <span className="text-[#1e2a28]/70">Email</span>
                   <strong className="font-semibold">{email}</strong>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-[#1e2a28]/55">Text reminders</span>
+                  <span className="text-[#1e2a28]/70">Text reminders</span>
                   <strong className="font-semibold">{consent ? 'Yes' : 'No (email only)'}</strong>
                 </div>
               </div>
@@ -485,18 +488,18 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                 ✓
               </div>
               <h1 className="text-[21px] font-medium tracking-tight m-0">You&apos;re booked</h1>
-              <p className="text-[13px] text-[#1e2a28]/55 m-0 leading-relaxed">
-                See you at Lakeside Dental on {date}, {time}.
+              <p className="text-[13px] text-[#1e2a28]/70 m-0 leading-relaxed">
+                See you at {practice.name} on {date}, {time}.
               </p>
 
               <div className="border border-[#1e2a28]/16 p-4 text-left text-xs space-y-3">
                 <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#1e2a28]/55">Booking reference</div>
-                  <div className="text-[15px] font-semibold text-[#a3533a] font-mono mt-0.5">{bookingRef}</div>
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-[#1e2a28]/70">Booking reference</div>
+                  <div className="text-[15px] font-semibold text-[#a3533a] tabular-nums mt-0.5">{bookingRef}</div>
                 </div>
                 <div className="h-[1px] bg-[#1e2a28]/14" />
                 <div className="space-y-2 text-[13.5px]">
-                  <div>{visitType?.name} — <b>Dr. Mensah</b></div>
+                  <div>{visitType?.name} — <b>{bookedWith}</b></div>
                   <div><b>{date}</b></div>
                   <div><b>{time}</b> (~{visitType?.duration} min)</div>
                 </div>
@@ -504,7 +507,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
 
               {/* Notification status */}
               <div className="text-left space-y-2">
-                <div className="text-[10px] uppercase font-bold text-[#a3533a] tracking-widest">Sending your confirmation</div>
+                <div className="text-[11px] uppercase font-bold text-[#a3533a] tracking-widest">Sending your confirmation</div>
                 <div className="border border-[#1e2a28]/16 p-3 flex items-center justify-between text-xs">
                   <span>Email</span>
                   <span className="text-emerald-800 font-semibold">{notifEmail ? 'Sent ✓' : 'Sending…'}</span>
@@ -522,7 +525,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                   onClick={onBack}
                   className="w-full p-3 bg-[#1e2a28] text-[#f4f0e8] text-[13px] font-semibold"
                 >
-                  Return to Chairfill App
+                  Back to Plenire
                 </button>
               </div>
             </div>

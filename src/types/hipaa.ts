@@ -1,4 +1,4 @@
-export type StaffRole = 'front_desk' | 'hygienist' | 'dentist' | 'compliance_officer';
+export type StaffRole = 'front_desk' | 'owner' | 'hygienist' | 'dentist' | 'compliance_officer';
 
 export interface StaffUser {
   id: string;
@@ -10,34 +10,26 @@ export interface StaffUser {
 }
 
 export type AuditAction =
-  | 'LOGIN'
-  | 'LOGOUT'
-  | 'SESSION_TIMEOUT'
-  | 'SESSION_UNLOCK'
-  | 'READ_EPHI'
-  | 'CREATE_WALKIN'
-  | 'UPDATE_APPOINTMENT'
-  | 'SEND_OUTREACH'
-  | 'RECOVERY_FILLED'
-  | 'EXPORT_AUDIT'
-  | 'BREAK_GLASS_ACCESS'
-  | 'TCPA_CONSENT_RECORDED'
-  | 'OPT_OUT_RECORDED'
-  | 'EPHI_SCRUBBER_TRIGGERED';
-
-export interface AuditLogEvent {
-  id: string;
-  timestamp: string;
-  user: string;
-  userRole: StaffRole;
-  action: AuditAction;
-  resourceId?: string;
-  patientName?: string;
-  details: string;
-  hash: string;
-  ipAddress: string;
-  complianceFlag?: boolean;
-}
+  | 'WORKSTATION_LOCK'
+  | 'WORKSTATION_AUTO_LOCK'
+  | 'WORKSTATION_UNLOCK'
+  | 'UNLOCK_FAILED'
+  | 'PIN_SET'
+  | 'PIN_CHANGED'
+  | 'IDLE_TIMEOUT_CHANGED'
+  | 'ROLE_SWITCH'
+  | 'PRIVACY_SHIELD'
+  | 'EPHI_BLOCKED'
+  | 'SMS_SENT'
+  | 'DISPATCH_OFFER'
+  | 'SLOT_FILLED'
+  | 'TCPA_STOP'
+  | 'NO_SHOW_RECORDED'
+  | 'APPT_UPDATE'
+  | 'APPT_UNDO'
+  | 'FOLLOWUP_SET'
+  | 'WALKIN_ADDED'
+  | 'PATIENT_BOOKED';
 
 export interface Patient {
   id: string;
@@ -144,6 +136,7 @@ export interface PracticeInfo {
   initials: string;
   tagline: string;
   timezone: string;
+  ehr?: string;
   address: string;
   phone: string;
   providers: {

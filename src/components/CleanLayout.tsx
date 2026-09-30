@@ -1,6 +1,11 @@
-import React, { useState } from 'react';
-import { useHIPAA } from '../context/HIPAAContext';
-import { Lock, ShieldCheck, Eye, EyeOff, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { useHIPAA, validatePin } from '../context/HIPAAContext';
+import { usePractice, ViewRole } from '../context/PracticeContext';
+import { todayLong } from '../lib/format';
+import {
+  CalendarDays, Eye, EyeOff, LayoutDashboard, ListChecks, Lock, Menu, MessageSquare, RefreshCcw,
+  Settings as SettingsIcon, ShieldCheck, Users, X,
+} from 'lucide-react';
 
 interface CleanLayoutProps {
   children: React.ReactNode;
@@ -9,268 +14,284 @@ interface CleanLayoutProps {
   onOpenBooking: () => void;
 }
 
-export const CleanLayout: React.FC<CleanLayoutProps> = ({
-  children,
-  activeView,
-  onNavigate,
-  onOpenBooking,
-}) => {
-  const { isLocked, unlock, lock, privacyShield, togglePrivacyShield, auditTrail } = useHIPAA();
-  const [pin, setPin] = useState('');
-  const [pinError, setPinError] = useState(false);
-  const [showAuditModal, setShowAuditModal] = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+const NAV = [
+  { id: 'dashboard', label: 'Dashboard', Icon: LayoutDashboard },
+  { id: 'today', label: 'Today', Icon: CalendarDays },
+  { id: 'recovery', label: 'Recovery', Icon: RefreshCcw },
+  { id: 'messages', label: 'Messages', Icon: MessageSquare },
+  { id: 'patients', label: 'Patients', Icon: Users },
+  { id: 'waitlist', label: 'Waitlist', Icon: ListChecks },
+  { id: 'settings', label: 'Settings', Icon: SettingsIcon },
+];
 
-  const handleUnlock = (e: React.FormEvent) => {
+const ROLES: { id: ViewRole; label: string }[] = [
+  { id: 'front_desk', label: 'Front desk' },
+  { id: 'owner', label: 'Owner' },
+];
+
+/** Full-screen lock. Opaque (not see-through) so patient data is never visible behind it. */
+const ScreenLock: React.FC = () => {
+  const { hasPin, unlock, setPin } = useHIPAA();
+  const [pin, setPinValue] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!unlock(pin)) {
-      setPinError(true);
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    if (hasPin) {
+      const r = await unlock(pin);
+      if (!r.ok) setError(r.message ?? 'Incorrect PIN.');
     } else {
-      setPin('');
-      setPinError(false);
+      const problem = validatePin(pin) ?? (pin !== confirm ? 'The two PINs do not match.' : null);
+      if (problem) setError(problem);
+      else {
+        const r = await setPin(pin);
+        if (r.ok) await unlock(pin);
+        else setError(r.message ?? 'Could not set PIN.');
+      }
     }
+    setPinValue('');
+    setConfirm('');
+    setBusy(false);
   };
 
-  const navItems = [
-    { id: 'today', label: 'Today', icon: '▦' },
-    { id: 'recovery', label: 'Recovery', icon: '↗' },
-    { id: 'messages', label: 'Messages', icon: '✉' },
-    { id: 'patients', label: 'Patients', icon: '◎' },
-    { id: 'waitlist', label: 'Waitlist', icon: '☷' },
-    { id: 'settings', label: 'Settings', icon: '⚙' },
-  ];
-
-  const getTitle = () => {
-    switch (activeView) {
-      case 'today':
-        return { title: 'Today', sub: 'Tuesday, June 30 · Lakeside Dental' };
-      case 'recovery':
-        return { title: 'Recovery', sub: 'Openings, offers & estimated revenue recovered' };
-      case 'messages':
-        return { title: 'Messages', sub: 'Two-way SMS conversations with patients' };
-      case 'patients':
-        return { title: 'Patients', sub: 'CRM · patient history, contact details & recovery activity' };
-      case 'waitlist':
-        return { title: 'Waitlist', sub: 'Everyone ready to take an earlier opening' };
-      case 'settings':
-        return { title: 'Settings', sub: 'Messaging, compliance & practice preferences' };
-      default:
-        return { title: 'Lakeside Dental', sub: 'Open Dental EHR' };
-    }
-  };
-
-  const currentInfo = getTitle();
+  const field = 'w-full py-2 px-3 bg-white border border-[#1e2a28]/40 text-center text-sm tracking-widest tabular-nums';
 
   return (
-    <div className="flex min-h-screen bg-[#f4f0e8] text-[#1e2a28]">
-      {/* Workstation Auto-Lock Modal */}
-      {isLocked && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1e2a28]/70 backdrop-blur-sm p-4">
-          <div className="w-full max-w-sm bg-[#f4f0e8] border border-[#1e2a28] p-6 shadow-xl text-center">
-            <div className="w-12 h-12 rounded-full border border-[#1e2a28] flex items-center justify-center mx-auto mb-3">
-              <Lock className="w-5 h-5 text-[#a3533a]" />
-            </div>
-            <h2 className="text-lg font-medium text-[#1e2a28]">Workstation Locked</h2>
-            <p className="text-xs text-[#1e2a28]/60 mt-1 mb-4">
-              HIPAA Privacy Safeguard (§ 164.312) · Enter staff PIN
-            </p>
-            <form onSubmit={handleUnlock} className="space-y-3">
-              <input
-                type="password"
-                autoFocus
-                value={pin}
-                onChange={(e) => {
-                  setPin(e.target.value);
-                  setPinError(false);
-                }}
-                placeholder="Enter PIN (Default: 1234)"
-                className="w-full py-2 px-3 bg-white border border-[#1e2a28]/25 text-center font-mono text-sm tracking-widest focus:outline-none focus:border-[#1e2a28]"
-              />
-              {pinError && (
-                <div className="text-xs text-[#a3533a]">Incorrect PIN (try 1234)</div>
-              )}
-              <button
-                type="submit"
-                className="w-full py-2 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold hover:bg-[#1e2a28]/90"
-              >
-                Unlock Workstation
-              </button>
-            </form>
-          </div>
+    <div role="dialog" aria-modal="true" aria-labelledby="lock-title" className="fixed inset-0 z-50 flex items-center justify-center bg-[#f4f0e8] p-4">
+      <div className="w-full max-w-sm border border-[#1e2a28] p-6 text-center">
+        <div className="w-12 h-12 rounded-full border border-[#1e2a28] flex items-center justify-center mx-auto mb-3">
+          <Lock className="w-5 h-5 text-[#a3533a]" aria-hidden="true" />
         </div>
-      )}
+        <h2 id="lock-title" className="text-lg font-medium">{hasPin ? 'Screen locked' : 'Create a PIN to lock the screen'}</h2>
+        <p className="text-xs text-[#1e2a28]/70 mt-1 mb-4">
+          {hasPin ? 'Enter your PIN to continue.' : 'Choose 4 to 8 digits. You will use it to unlock.'}
+        </p>
+        <form onSubmit={submit} className="space-y-3">
+          <input
+            type="password" inputMode="numeric" autoComplete="off" autoFocus value={pin}
+            onChange={(e) => { setPinValue(e.target.value); setError(''); }}
+            aria-label={hasPin ? 'PIN' : 'New PIN'} placeholder={hasPin ? 'PIN' : 'New PIN'} className={field}
+          />
+          {!hasPin && (
+            <input
+              type="password" inputMode="numeric" autoComplete="off" value={confirm}
+              onChange={(e) => { setConfirm(e.target.value); setError(''); }}
+              aria-label="Confirm PIN" placeholder="Confirm PIN" className={field}
+            />
+          )}
+          {error && <div role="alert" className="text-xs text-[#a3533a] font-semibold">{error}</div>}
+          <button type="submit" disabled={busy} className="w-full py-2 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold disabled:opacity-80">
+            {hasPin ? 'Unlock' : 'Set PIN and lock'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
 
-      {/* Audit Log Modal */}
-      {showAuditModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1e2a28]/50 backdrop-blur-sm p-4">
-          <div className="w-full max-w-lg bg-[#f4f0e8] border border-[#1e2a28] p-5 shadow-xl max-h-[85vh] flex flex-col">
+export const CleanLayout: React.FC<CleanLayoutProps> = ({ children, activeView, onNavigate, onOpenBooking }) => {
+  const { isLocked, lock, privacyShield, togglePrivacyShield, auditTrail, logAudit } = useHIPAA();
+  const { practice, user, role, setRole } = usePractice();
+  const [showAudit, setShowAudit] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const auditBtn = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!showAudit) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && closeAudit();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  const closeAudit = () => {
+    setShowAudit(false);
+    auditBtn.current?.focus();
+  };
+
+  const switchRole = (next: ViewRole) => {
+    if (next === role) return;
+    setRole(next);
+    logAudit('ROLE_SWITCH', `Demo view switched to ${next === 'owner' ? 'Owner' : 'Front desk'}`);
+  };
+
+  const titles: Record<string, { title: string; sub: string }> = {
+    dashboard: { title: 'Dashboard', sub: `${role === 'owner' ? 'Owner' : 'Front desk'} view · ${practice.name}` },
+    today: { title: 'Today', sub: `${todayLong(practice.timezone)} · ${practice.name}` },
+    recovery: { title: 'Recovery', sub: role === 'owner' ? 'Openings, offers & estimated revenue recovered' : 'Openings, offers & recovery rate' },
+    messages: { title: 'Messages', sub: 'Two-way SMS conversations with patients' },
+    patients: { title: 'Patients', sub: 'Patient history, contact details & recovery activity' },
+    waitlist: { title: 'Waitlist', sub: 'Everyone ready to take an earlier opening' },
+    settings: { title: 'Settings', sub: 'Messaging, screen lock & practice preferences' },
+  };
+  const current = titles[activeView] ?? { title: practice.name, sub: '' };
+
+  return (
+    <>
+      {/* Everything behind a modal is inert: no keyboard/screen-reader access while locked. */}
+      <div inert={isLocked || showAudit} className="flex min-h-screen bg-[#f4f0e8] text-[#1e2a28]">
+        <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:bg-[#1e2a28] focus:text-[#f4f0e8] focus:px-3 focus:py-2 text-xs font-semibold">
+          Skip to main content
+        </a>
+
+        {menuOpen && <button aria-label="Close menu" onClick={() => setMenuOpen(false)} className="fixed inset-0 z-20 bg-[#1e2a28]/40 md:hidden" />}
+
+        <aside
+          className={`fixed md:static inset-y-0 left-0 w-[248px] flex-shrink-0 bg-[#f4f0e8] border-r border-[#1e2a28]/15 flex flex-col z-30 transform transition-transform duration-200 ${
+            menuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+          }`}
+        >
+          <div className="p-7 pb-6">
+            <div className="flex items-center gap-2.5">
+              <div aria-hidden="true" className="w-7 h-7 rounded-full border border-[#1e2a28] flex items-center justify-center font-bold text-[11px] tracking-tighter">pl</div>
+              <div className="font-bold text-[17px] tracking-tight">Plenire</div>
+            </div>
+            <p className="text-[12px] text-[#1e2a28]/70 mt-3 leading-relaxed">Patient scheduling &amp; no-show recovery</p>
+          </div>
+
+          <nav aria-label="Main" className="px-3 flex-1 space-y-1">
+            {NAV.map(({ id, label, Icon }) => {
+              const active = activeView === id;
+              return (
+                <button
+                  key={id}
+                  aria-current={active ? 'page' : undefined}
+                  onClick={() => { onNavigate(id); setMenuOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-3 min-h-[40px] text-[13px] font-medium transition-colors text-left ${
+                    active ? 'bg-[#1e2a28] text-[#f4f0e8]' : 'text-[#1e2a28]/80 hover:bg-[#1e2a28]/5 hover:text-[#1e2a28]'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+            <div className="pt-4 px-3">
+              <button
+                onClick={() => { onOpenBooking(); setMenuOpen(false); }}
+                className="w-full py-2 px-3 border border-[#a3533a]/60 text-[#a3533a] text-xs font-semibold hover:bg-[#a3533a]/10 text-left flex items-center justify-between"
+              >
+                <span>Patient booking page</span>
+                <span aria-hidden="true">↗</span>
+              </button>
+            </div>
+          </nav>
+
+          <div className="border-t border-[#1e2a28]/15 p-5 space-y-3">
+            <div className="flex items-center gap-2.5">
+              <div aria-hidden="true" className="w-8 h-8 rounded-full border border-[#1e2a28]/40 flex items-center justify-center font-bold text-[11px]">{user.initials}</div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[12px] font-semibold truncate">{user.name}</div>
+                <div className="text-[11px] text-[#1e2a28]/70 truncate">{role === 'owner' ? 'Owner' : 'Front desk'} · {practice.name}</div>
+              </div>
+            </div>
+            <div role="group" aria-label="Demo: view as" className="flex border border-[#1e2a28]/30 text-[11px] font-semibold">
+              {ROLES.map((r) => (
+                <button
+                  key={r.id}
+                  aria-pressed={role === r.id}
+                  onClick={() => switchRole(r.id)}
+                  className={`flex-1 py-1.5 ${role === r.id ? 'bg-[#1e2a28] text-[#f4f0e8]' : 'text-[#1e2a28]/80 hover:bg-[#1e2a28]/5'}`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+            <div className="text-[11px] text-[#1e2a28]/70">Demo: switch the view. Real logins assign the role.</div>
+          </div>
+        </aside>
+
+        <div className="flex-1 flex flex-col min-w-0">
+          <header className="min-h-[76px] px-6 md:px-9 flex items-center justify-between gap-4 border-b border-[#1e2a28]/15 bg-[#f4f0e8] sticky top-0 z-10">
+            <div className="flex items-center gap-3 min-w-0">
+              <button
+                onClick={() => setMenuOpen((o) => !o)}
+                aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+                aria-expanded={menuOpen}
+                className="md:hidden p-1.5 border border-[#1e2a28]/30"
+              >
+                <Menu className="w-4 h-4" aria-hidden="true" />
+              </button>
+              <div>
+                <h1 className="text-[21px] font-semibold tracking-tight">{current.title}</h1>
+                <p className="text-[12px] text-[#1e2a28]/70 mt-0.5 hidden sm:block">{current.sub}</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                onClick={togglePrivacyShield}
+                aria-pressed={privacyShield}
+                title="Screen Shield hides patient names, phones and visit details on counter monitors"
+                className={`p-1.5 px-2.5 border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                  privacyShield ? 'bg-[#1e2a28] text-[#f4f0e8] border-[#1e2a28]' : 'bg-transparent border-[#1e2a28]/30 text-[#1e2a28]/80 hover:border-[#1e2a28]'
+                }`}
+              >
+                {privacyShield ? <EyeOff className="w-3.5 h-3.5" aria-hidden="true" /> : <Eye className="w-3.5 h-3.5" aria-hidden="true" />}
+                <span className="hidden sm:inline">{privacyShield ? 'Shield on' : 'Shield'}</span>
+                <span className="sr-only sm:hidden">Screen Shield</span>
+              </button>
+              <button
+                ref={auditBtn}
+                onClick={() => setShowAudit(true)}
+                className="p-1.5 px-2.5 border border-[#1e2a28]/30 text-[#1e2a28]/80 hover:border-[#1e2a28] flex items-center gap-1"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-[#a3533a]" aria-hidden="true" />
+                <span className="hidden sm:inline">Activity</span>
+                <span className="sr-only sm:hidden">Activity log</span>
+              </button>
+              <button onClick={lock} aria-label="Lock screen" title="Lock screen" className="p-1.5 border border-[#1e2a28]/30 text-[#1e2a28]/80 hover:text-[#1e2a28]">
+                <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            </div>
+          </header>
+
+          <main id="main" tabIndex={-1} className="flex-1 p-6 md:p-9 max-w-[1180px] w-full mx-auto">
+            {children}
+          </main>
+        </div>
+      </div>
+
+      {isLocked && <ScreenLock />}
+
+      {showAudit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1e2a28]/50 p-4">
+          <div role="dialog" aria-modal="true" aria-labelledby="audit-title" className="w-full max-w-lg bg-[#f4f0e8] border border-[#1e2a28] p-5 shadow-xl max-h-[85vh] flex flex-col">
             <div className="flex items-center justify-between pb-3 border-b border-[#1e2a28]/15">
               <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-[#a3533a]" />
-                <h3 className="font-semibold text-sm">HIPAA Audit Trail (§ 164.312)</h3>
+                <ShieldCheck className="w-4 h-4 text-[#a3533a]" aria-hidden="true" />
+                <h2 id="audit-title" className="font-semibold text-sm">Activity log</h2>
               </div>
-              <button
-                onClick={() => setShowAuditModal(false)}
-                className="p-1 hover:text-[#a3533a]"
-              >
-                <X className="w-4 h-4" />
+              <button onClick={closeAudit} aria-label="Close activity log" className="p-1 hover:text-[#a3533a]">
+                <X className="w-4 h-4" aria-hidden="true" />
               </button>
             </div>
             <div className="flex-1 overflow-y-auto my-3 divide-y divide-[#1e2a28]/10 text-xs">
               {auditTrail.length === 0 ? (
-                <div className="py-6 text-center text-[#1e2a28]/50">
-                  Audit events recorded automatically as staff interacts.
-                </div>
+                <div className="py-6 text-center text-[#1e2a28]/70">Activity is recorded here as staff use the app.</div>
               ) : (
-                auditTrail.map((entry) => (
-                  <div key={entry.id} className="py-2 space-y-0.5 font-mono">
-                    <div className="flex items-center justify-between text-[#1e2a28]/50 text-[10px]">
-                      <span>{entry.time}</span>
-                      <span>{entry.action}</span>
+                auditTrail.map((e) => (
+                  <div key={e.id} className="py-2 space-y-0.5">
+                    <div className="flex items-center justify-between text-[#1e2a28]/70 text-[11px] tabular-nums">
+                      <span>{e.time} · {e.user}</span>
+                      <span>{e.action}</span>
                     </div>
-                    <div className="font-sans text-[11px] text-[#1e2a28]">{entry.details}</div>
+                    <div className="text-[12px]">{e.details}</div>
                   </div>
                 ))
               )}
             </div>
+            <p className="text-[11px] text-[#1e2a28]/70 m-0 mb-3">Demo log: kept in this browser tab only and cleared on refresh.</p>
             <div className="pt-2 border-t border-[#1e2a28]/15 flex justify-end">
-              <button
-                onClick={() => setShowAuditModal(false)}
-                className="px-3 py-1.5 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold"
-              >
-                Close
-              </button>
+              <button onClick={closeAudit} className="px-3 py-1.5 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold">Close</button>
             </div>
           </div>
         </div>
       )}
-
-      {/* Sidebar - Exact original minimal aesthetic */}
-      <aside
-        className={`fixed md:static inset-y-0 left-0 w-[248px] flex-shrink-0 bg-[#f4f0e8] border-r border-[#1e2a28]/15 flex flex-col z-30 transform transition-transform duration-200 ${
-          mobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-        }`}
-      >
-        <div className="p-7 pb-6">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-full border border-[#1e2a28] flex items-center justify-center font-bold text-[11px] tracking-tighter">
-              cf
-            </div>
-            <div className="font-bold text-[17px] tracking-tight text-[#1e2a28]">Chairfill</div>
-          </div>
-          <p className="text-[11px] text-[#1e2a28]/60 mt-3 leading-relaxed">
-            Scheduling &amp; fill for Open Dental
-          </p>
-        </div>
-
-        <nav className="px-3 flex-1 space-y-1">
-          {navItems.map((item) => {
-            const active = activeView === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => {
-                  onNavigate(item.id);
-                  setMobileMenuOpen(false);
-                }}
-                className={`w-full flex items-center gap-3 px-3 min-h-[40px] text-[13px] font-medium transition-colors text-left ${
-                  active
-                    ? 'bg-[#1e2a28] text-[#f4f0e8]'
-                    : 'text-[#1e2a28]/70 hover:bg-[#1e2a28]/5 hover:text-[#1e2a28]'
-                }`}
-              >
-                <span className="w-4 text-center font-normal">{item.icon}</span>
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-
-          <div className="pt-4 px-3">
-            <button
-              onClick={() => {
-                onOpenBooking();
-                setMobileMenuOpen(false);
-              }}
-              className="w-full py-2 px-3 border border-[#a3533a]/40 text-[#a3533a] text-xs font-semibold hover:bg-[#a3533a]/10 text-left flex items-center justify-between"
-            >
-              <span>Patient Booking</span>
-              <span>↗</span>
-            </button>
-          </div>
-        </nav>
-
-        {/* User Card */}
-        <div className="border-t border-[#1e2a28]/15 p-5 flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-full border border-[#1e2a28]/25 flex items-center justify-center font-bold text-[10px] bg-transparent">
-            TR
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-[12px] font-semibold text-[#1e2a28] truncate">Tracy R.</div>
-            <div className="text-[10px] text-[#1e2a28]/55 truncate">Front desk · Lakeside Dental</div>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main shell */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <header className="min-h-[76px] px-6 md:px-9 flex items-center justify-between gap-4 border-b border-[#1e2a28]/15 bg-[#f4f0e8] sticky top-0 z-20">
-          <div className="flex items-center gap-3 min-w-0">
-            <button
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="md:hidden p-1.5 border border-[#1e2a28]/20"
-            >
-              ☰
-            </button>
-            <div>
-              <h1 className="text-[21px] font-semibold tracking-tight text-[#1e2a28]">
-                {currentInfo.title}
-              </h1>
-              <p className="text-[12px] text-[#1e2a28]/60 mt-0.5 hidden sm:block">
-                {currentInfo.sub}
-              </p>
-            </div>
-          </div>
-
-          {/* Discreet HIPAA Controls */}
-          <div className="flex items-center gap-2 text-xs">
-            <button
-              onClick={togglePrivacyShield}
-              className={`p-1.5 px-2.5 border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-                privacyShield
-                  ? 'bg-[#1e2a28] text-[#f4f0e8] border-[#1e2a28]'
-                  : 'bg-transparent border-[#1e2a28]/20 text-[#1e2a28]/70 hover:border-[#1e2a28]'
-              }`}
-              title="Screen Shield masks patient names on counter monitors"
-            >
-              {privacyShield ? <EyeOff className="w-3.5 h-3.5 text-[#a3533a]" /> : <Eye className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">{privacyShield ? 'Shield ON' : 'Shield'}</span>
-            </button>
-
-            <button
-              onClick={() => setShowAuditModal(true)}
-              className="p-1.5 px-2.5 border border-[#1e2a28]/20 text-[#1e2a28]/70 hover:border-[#1e2a28] flex items-center gap-1"
-              title="Audit trail"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-[#a3533a]" />
-              <span className="hidden sm:inline">Audit</span>
-            </button>
-
-            <button
-              onClick={lock}
-              className="p-1.5 border border-[#1e2a28]/20 text-[#1e2a28]/70 hover:text-[#1e2a28]"
-              title="Lock terminal"
-            >
-              <Lock className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </header>
-
-        {/* Content area */}
-        <main className="flex-1 p-6 md:p-9 max-w-[1180px] w-full mx-auto">
-          {children}
-        </main>
-      </div>
-    </div>
+    </>
   );
 };

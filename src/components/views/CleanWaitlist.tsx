@@ -8,9 +8,9 @@ export const CleanWaitlist: React.FC<{ waitlist: WaitlistEntry[] }> = ({ waitlis
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-1">
-        <div className="text-[10px] tracking-widest uppercase text-[#a3533a] font-bold">Waitlist</div>
+        <div className="text-[11px] tracking-widest uppercase text-[#a3533a] font-bold">Waitlist</div>
         <h2 className="text-[30px] font-normal tracking-tight text-[#1e2a28] m-0">Patients ready to move up</h2>
-        <p className="text-[13px] text-[#1e2a28]/60 mt-1 max-w-lg leading-relaxed">
+        <p className="text-[13px] text-[#1e2a28]/70 mt-1 max-w-lg leading-relaxed">
           Matches are ordered by urgency and appointment fit.
         </p>
       </div>
@@ -23,9 +23,9 @@ export const CleanWaitlist: React.FC<{ waitlist: WaitlistEntry[] }> = ({ waitlis
             </span>
             <div className="flex-1 min-w-0">
               <strong className="block text-[13px] font-semibold truncate">{maskName(p.name)}</strong>
-              <p className="text-[11px] text-[#1e2a28]/55 m-0 mt-0.5 truncate">{p.wants} · {p.provider}</p>
+              <p className="text-[11px] text-[#1e2a28]/70 m-0 mt-0.5 truncate">{p.wants} · {p.provider}</p>
             </div>
-            <div className="text-right text-[10px] text-[#1e2a28]/55 leading-tight shrink-0">
+            <div className="text-right text-[11px] text-[#1e2a28]/70 leading-tight shrink-0">
               <div>{p.reason}</div>
               <div>{p.when}</div>
             </div>

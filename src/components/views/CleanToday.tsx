@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { useHIPAA } from '../../context/HIPAAContext';
+import { usePractice } from '../../context/PracticeContext';
+import { initialsOf, todayShort, uid } from '../../lib/format';
 import { Appointment, Patient } from '../../types/hipaa';
-import { X, RotateCcw } from 'lucide-react';
 
 interface CleanTodayProps {
   appointments: Appointment[];
   setAppointments: React.Dispatch<React.SetStateAction<Appointment[]>>;
-  patients: Patient[];
   setPatients: React.Dispatch<React.SetStateAction<Patient[]>>;
   onGoToRecovery: () => void;
   onAddRecoveryOpening: (opening: any) => void;
@@ -15,12 +15,13 @@ interface CleanTodayProps {
 export const CleanToday: React.FC<CleanTodayProps> = ({
   appointments,
   setAppointments,
-  patients,
   setPatients,
   onGoToRecovery,
   onAddRecoveryOpening,
 }) => {
-  const { maskName, logAudit } = useHIPAA();
+  const { maskName, maskTreatment, logAudit } = useHIPAA();
+  const { practice } = usePractice();
+  const chairs = practice.providers.filter((p) => p.op);
 
   const [chairFilter, setChairFilter] = useState('all');
   const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
@@ -39,19 +40,14 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
   const [walkinName, setWalkinName] = useState('');
   const [walkinPhone, setWalkinPhone] = useState('');
   const [walkinEmail, setWalkinEmail] = useState('');
-  const [walkinProvider, setWalkinProvider] = useState('Dr. Mensah');
+  const [walkinProvider, setWalkinProvider] = useState(chairs[0]?.name ?? '');
   const [walkinTime, setWalkinTime] = useState('12:00');
-  const [walkinDuration, setWalkinDuration] = useState('60');
+  const walkinDuration = '60';
   const [walkinTreatment, setWalkinTreatment] = useState('Emergency exam');
   const [walkinConsent, setWalkinConsent] = useState(true);
   const [walkinError, setWalkinError] = useState('');
 
-  const calendarProviders = [
-    { name: 'Dr. Mensah', initials: 'NM', op: 'Op 1' },
-    { name: 'Dr. Patel', initials: 'AP', op: 'Op 3' },
-    { name: 'RDH Nguyen', initials: 'LN', op: 'Hyg 1' },
-    { name: 'RDH Brooks', initials: 'MB', op: 'Hyg 2' },
-  ];
+  const calendarProviders = chairs.map((p) => ({ name: p.name, initials: p.initials, op: p.op ?? 'Op 1' }));
 
   const visible = chairFilter === 'all'
     ? appointments
@@ -129,16 +125,16 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
     const mins = h * 60 + m;
     const clockH = h % 12 || 12;
     const formatted = `${clockH}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
-    const initials = (walkinName.trim()[0] + (walkinName.trim().split(' ')[1]?.[0] || '')).toUpperCase();
+    const initials = initialsOf(walkinName);
     const pInfo = calendarProviders.find((p) => p.name === walkinProvider);
 
     const newPatient: Patient = {
-      id: `p-${Date.now()}`,
+      id: uid('p'),
       name: walkinName.trim(),
       initials,
       phone: walkinPhone.trim() || 'Walk-in patient',
       email: walkinEmail.trim() || 'No email provided',
-      lastVisit: 'Jun 30, 2026',
+      lastVisit: todayShort(practice.timezone),
       recentVisit: `${walkinTreatment} · ${formatted}`,
       status: 'Active',
       smsConsent: walkinConsent && /\d/.test(walkinPhone),
@@ -147,7 +143,7 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
     };
 
     const newAppt: Appointment = {
-      id: `appt-${Date.now()}`,
+      id: uid('appt'),
       time: formatted,
       mins,
       dur: Number(walkinDuration),
@@ -176,29 +172,29 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
       {/* Metric row */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <div className="p-4 border border-[#1e2a28]/15 bg-white/40">
-          <div className="text-[10px] text-[#1e2a28]/55 font-semibold uppercase tracking-wider">Booked today</div>
+          <div className="text-[11px] text-[#1e2a28]/70 font-semibold uppercase tracking-wider">Booked today</div>
           <div className="text-[28px] font-medium tracking-tight text-[#1e2a28] mt-2">{appointments.length}</div>
-          <div className="text-[11px] text-[#1e2a28]/50 mt-1">Across 4 operatories</div>
+          <div className="text-[11px] text-[#1e2a28]/70 mt-1">Across {chairs.length} operatories</div>
         </div>
         <div className="p-4 border border-[#1e2a28]/15 bg-white/40">
-          <div className="text-[10px] text-[#1e2a28]/55 font-semibold uppercase tracking-wider">Seen / arrived</div>
+          <div className="text-[11px] text-[#1e2a28]/70 font-semibold uppercase tracking-wider">Seen / arrived</div>
           <div className="text-[28px] font-medium tracking-tight text-[#1e2a28] mt-2">{seen}</div>
-          <div className="text-[11px] text-[#1e2a28]/50 mt-1">Completed appointments</div>
+          <div className="text-[11px] text-[#1e2a28]/70 mt-1">Completed appointments</div>
         </div>
         <div className="p-4 border border-[#1e2a28]/15 bg-white/40">
-          <div className="text-[10px] text-[#1e2a28]/55 font-semibold uppercase tracking-wider">No-shows</div>
+          <div className="text-[11px] text-[#1e2a28]/70 font-semibold uppercase tracking-wider">No-shows</div>
           <div className="text-[28px] font-medium tracking-tight text-[#a3533a] mt-2">{noShows}</div>
-          <div className="text-[11px] text-[#1e2a28]/50 mt-1">Needs recovery</div>
+          <div className="text-[11px] text-[#1e2a28]/70 mt-1">Needs recovery</div>
         </div>
         <div className="p-4 border border-[#1e2a28]/15 bg-white/40">
-          <div className="text-[10px] text-[#1e2a28]/55 font-semibold uppercase tracking-wider">Follow-ups set</div>
+          <div className="text-[11px] text-[#1e2a28]/70 font-semibold uppercase tracking-wider">Follow-ups set</div>
           <div className="text-[28px] font-medium tracking-tight text-[#1e2a28] mt-2">{followups}</div>
-          <div className="text-[11px] text-[#1e2a28]/50 mt-1">Follow-ups assigned</div>
+          <div className="text-[11px] text-[#1e2a28]/70 mt-1">Follow-ups assigned</div>
         </div>
         <div className="p-4 border border-[#1e2a28]/15 bg-white/40 col-span-2 md:col-span-1">
-          <div className="text-[10px] text-[#1e2a28]/55 font-semibold uppercase tracking-wider">Reviews sent</div>
+          <div className="text-[11px] text-[#1e2a28]/70 font-semibold uppercase tracking-wider">Reviews sent</div>
           <div className="text-[28px] font-medium tracking-tight text-[#1e2a28] mt-2">{reviews}</div>
-          <div className="text-[11px] text-[#1e2a28]/50 mt-1">Thank-you requests</div>
+          <div className="text-[11px] text-[#1e2a28]/70 mt-1">Thank-you requests</div>
         </div>
       </div>
 
@@ -269,12 +265,12 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
               .filter((p) => chairFilter === 'all' || chairFilter === p.name)
               .map((p) => (
                 <div key={p.name} className="h-[54px] border-r border-[#1e2a28]/15 last:border-r-0 flex items-center gap-2 px-3">
-                  <span className="w-6 h-6 rounded-full border border-[#1e2a28]/25 flex items-center justify-center font-bold text-[9px]">
+                  <span className="w-6 h-6 rounded-full border border-[#1e2a28]/25 flex items-center justify-center font-bold text-[11px]">
                     {p.initials}
                   </span>
                   <div>
                     <strong className="block text-[11px] font-semibold leading-tight">{p.name}</strong>
-                    <small className="block text-[9px] text-[#1e2a28]/50">{p.op}</small>
+                    <small className="block text-[11px] text-[#1e2a28]/70">{p.op}</small>
                   </div>
                 </div>
               ))}
@@ -288,7 +284,7 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
                 <span
                   key={h}
                   style={{ top: `${(h * 60 - 480) * 1.4}px` }}
-                  className="absolute right-2 -translate-y-1/2 text-[9px] text-[#1e2a28]/50"
+                  className="absolute right-2 -translate-y-1/2 text-[11px] text-[#1e2a28]/70"
                 >
                   {h % 12 || 12} {h < 12 ? 'AM' : 'PM'}
                 </span>
@@ -325,13 +321,13 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
                               : 'border-[#1e2a28] bg-[#1e2a28]/[0.09] text-[#1e2a28]'
                           }`}
                         >
-                          <strong className="block text-[10px] font-semibold truncate leading-tight">
+                          <strong className="block text-[11px] font-semibold truncate leading-tight">
                             {maskName(appt.patient)}
                           </strong>
-                          <span className="block text-[9px] text-[#1e2a28]/80 truncate mt-0.5">
-                            {appt.treatment}
+                          <span className="block text-[11px] text-[#1e2a28]/80 truncate mt-0.5">
+                            {maskTreatment(appt.treatment)}
                           </span>
-                          <small className="block text-[8px] text-[#1e2a28]/55 mt-0.5">{appt.time}</small>
+                          <small className="block text-[8px] text-[#1e2a28]/70 mt-0.5">{appt.time}</small>
                         </div>
                       );
                     })}
@@ -356,20 +352,20 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
                 className="p-3 px-4 flex items-center justify-between gap-3 hover:bg-[#1e2a28]/5 cursor-pointer text-xs"
               >
                 <div className="flex items-center gap-3">
-                  <div className="w-16 font-mono text-[11px] text-[#1e2a28]/60">{a.time}</div>
+                  <div className="w-16 tabular-nums text-[11px] text-[#1e2a28]/70">{a.time}</div>
                   <div>
                     <strong className="block text-xs font-semibold">{maskName(a.patient)}</strong>
-                    <span className="text-[10px] text-[#1e2a28]/55">{a.provider} · {a.treatment}</span>
+                    <span className="text-[11px] text-[#1e2a28]/70">{a.provider} · {maskTreatment(a.treatment)}</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
                   {a.followUp && (
-                    <span className="text-[9px] text-[#a3533a] font-semibold border border-[#a3533a]/30 px-1.5 py-0.5">
+                    <span className="text-[11px] text-[#a3533a] font-semibold border border-[#a3533a]/30 px-1.5 py-0.5">
                       {a.followUp}
                     </span>
                   )}
                   <span
-                    className={`text-[9px] font-semibold px-2 py-0.5 border ${
+                    className={`text-[11px] font-semibold px-2 py-0.5 border ${
                       a.status === 'noshow'
                         ? 'text-[#a3533a] border-[#a3533a]/50'
                         : 'text-[#1e2a28]/70 border-[#1e2a28]/20'
@@ -401,7 +397,7 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
                 <h3 className="text-[19px] font-medium tracking-tight text-[#1e2a28] m-0">
                   {maskName(selectedAppt.patient)}
                 </h3>
-                <p className="text-[11px] text-[#1e2a28]/55 mt-1">{selectedAppt.treatment}</p>
+                <p className="text-[11px] text-[#1e2a28]/70 mt-1">{maskTreatment(selectedAppt.treatment)}</p>
               </div>
               <button
                 onClick={() => setSelectedAppt(null)}
@@ -411,7 +407,7 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
               </button>
             </div>
 
-            <div className="flex gap-2 my-3 text-[11px] text-[#1e2a28]/60 font-mono">
+            <div className="flex gap-2 my-3 text-[11px] text-[#1e2a28]/70 tabular-nums">
               <span>{selectedAppt.time}</span>
               <span>·</span>
               <span>{selectedAppt.op}</span>
@@ -422,7 +418,7 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
             {/* Follow up box */}
             {followupOpen && (
               <div className="p-3 border border-[#1e2a28]/15 bg-white/40 my-3 space-y-1">
-                <div className="text-[9px] font-bold uppercase tracking-wider text-[#1e2a28]/55 mb-2">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-[#1e2a28]/70 mb-2">
                   Assign follow-up
                 </div>
                 {['2-week post-op check', '6-week crown seat', '3-month perio maintenance', '6-month recall + exam'].map((preset) => (
@@ -534,7 +530,7 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
             {!followupOpen && selectedAppt.status !== 'scheduled' && (
               <button
                 onClick={handleUndo}
-                className="w-full text-center text-[11px] text-[#1e2a28]/55 hover:text-[#1e2a28] pt-2 mt-2 border-t border-[#1e2a28]/10"
+                className="w-full text-center text-[11px] text-[#1e2a28]/70 hover:text-[#1e2a28] pt-2 mt-2 border-t border-[#1e2a28]/10"
               >
                 ↺ Undo — back to {selectedAppt.status === 'arrived' ? 'scheduled' : 'arrived'}
               </button>
@@ -550,7 +546,7 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
             <div className="flex items-start justify-between pb-3 border-b border-[#1e2a28]/15">
               <div>
                 <h3 className="text-lg font-medium text-[#1e2a28]">Add walk-in patient</h3>
-                <p className="text-[11px] text-[#1e2a28]/55 mt-0.5">
+                <p className="text-[11px] text-[#1e2a28]/70 mt-0.5">
                   Create patient record and place appointment on a chair.
                 </p>
               </div>
@@ -562,8 +558,8 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
             <form onSubmit={handleSaveWalkin} className="space-y-3 my-3">
               <div className="grid grid-cols-2 gap-3">
                 <div className="col-span-2">
-                  <label className="block text-[10px] font-semibold text-[#1e2a28]/60 mb-1">Patient name *</label>
-                  <input
+                  <label htmlFor="f-cleantoday-24600" className="block text-[11px] font-semibold text-[#1e2a28]/70 mb-1">Patient name *</label>
+                  <input id="f-cleantoday-24600"
                     type="text"
                     required
                     value={walkinName}
@@ -573,18 +569,18 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-semibold text-[#1e2a28]/60 mb-1">Phone</label>
-                  <input
+                  <label htmlFor="f-cleantoday-25127" className="block text-[11px] font-semibold text-[#1e2a28]/70 mb-1">Phone</label>
+                  <input id="f-cleantoday-25127"
                     type="tel"
                     value={walkinPhone}
                     onChange={(e) => setWalkinPhone(e.target.value)}
-                    placeholder="(763) 555-0123"
+                    placeholder="(555) 123-4567"
                     className="w-full p-2 bg-transparent border border-[#1e2a28]/20 text-xs text-[#1e2a28]"
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-semibold text-[#1e2a28]/60 mb-1">Email</label>
-                  <input
+                  <label htmlFor="f-cleantoday-25621" className="block text-[11px] font-semibold text-[#1e2a28]/70 mb-1">Email</label>
+                  <input id="f-cleantoday-25621"
                     type="email"
                     value={walkinEmail}
                     onChange={(e) => setWalkinEmail(e.target.value)}
@@ -593,8 +589,8 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-semibold text-[#1e2a28]/60 mb-1">Chair / provider *</label>
-                  <select
+                  <label htmlFor="f-cleantoday-26121" className="block text-[11px] font-semibold text-[#1e2a28]/70 mb-1">Chair / provider *</label>
+                  <select id="f-cleantoday-26121"
                     value={walkinProvider}
                     onChange={(e) => setWalkinProvider(e.target.value)}
                     className="w-full p-2 bg-transparent border border-[#1e2a28]/20 text-xs text-[#1e2a28]"
@@ -605,8 +601,8 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[10px] font-semibold text-[#1e2a28]/60 mb-1">Time *</label>
-                  <input
+                  <label htmlFor="f-cleantoday-26743" className="block text-[11px] font-semibold text-[#1e2a28]/70 mb-1">Time *</label>
+                  <input id="f-cleantoday-26743"
                     type="time"
                     required
                     value={walkinTime}
@@ -615,8 +611,8 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
                   />
                 </div>
                 <div className="col-span-2">
-                  <label className="block text-[10px] font-semibold text-[#1e2a28]/60 mb-1">Visit / treatment *</label>
-                  <input
+                  <label htmlFor="f-cleantoday-27240" className="block text-[11px] font-semibold text-[#1e2a28]/70 mb-1">Visit / treatment *</label>
+                  <input id="f-cleantoday-27240"
                     type="text"
                     required
                     value={walkinTreatment}

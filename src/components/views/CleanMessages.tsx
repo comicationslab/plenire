@@ -1,65 +1,64 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useHIPAA } from '../../context/HIPAAContext';
-import { Conversation, Patient } from '../../types/hipaa';
+import { Conversation } from '../../types/hipaa';
+import { clockNow } from '../../lib/format';
 
 interface CleanMessagesProps {
   conversations: Conversation[];
   setConversations: React.Dispatch<React.SetStateAction<Conversation[]>>;
-  patients: Patient[];
 }
 
 export const CleanMessages: React.FC<CleanMessagesProps> = ({
   conversations,
   setConversations,
-  patients,
 }) => {
-  const { maskName, scrubEPHI, logAudit } = useHIPAA();
+  const { maskName, maskPhone, logAudit, checkOutgoing, safeMessage } = useHIPAA();
   const [activeId, setActiveId] = useState(conversations[0]?.id || '');
   const [inputVal, setInputVal] = useState('');
-  const [phiNotice, setPhiNotice] = useState(false);
+  const [phiTerms, setPhiTerms] = useState<string[] | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const active = conversations.find((c) => c.id === activeId);
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputVal.trim() || !active) return;
+    const text = inputVal.trim();
+    if (!text || !active) return;
 
-    // Check HIPAA scrubber
-    const { hadPHI, cleanText } = scrubEPHI(inputVal);
-    let textToSend = inputVal.trim();
-
-    if (hadPHI) {
-      setPhiNotice(true);
-      textToSend = cleanText;
-      logAudit('EPHI_SCRUBBED', `Scrubbed sensitive health terms from outgoing SMS to ${active.patient}`);
+    // Warn, never silently rewrite: staff decide what goes out.
+    const { hasPHI, terms } = checkOutgoing(text);
+    if (hasPHI) {
+      setPhiTerms(terms);
+      logAudit('EPHI_BLOCKED', `Held a text to ${active.patient}: health wording detected`);
+      return;
     }
 
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
+    const time = clockNow();
     setConversations((prev) =>
       prev.map((c) =>
         c.id === active.id
-          ? {
-              ...c,
-              time,
-              preview: textToSend,
-              lastFrom: 'practice',
-              messages: [...c.messages, { from: 'practice', time, text: textToSend }],
-            }
+          ? { ...c, time, preview: text, lastFrom: 'practice', messages: [...c.messages, { from: 'practice', time, text }] }
           : c
       )
     );
-
     logAudit('SMS_SENT', `SMS sent to ${active.patient}`);
     setInputVal('');
+    setPhiTerms(null);
+  };
+
+  const useSafeWording = () => {
+    if (!active) return;
+    setInputVal(safeMessage(active.patient.split(' ')[0]));
+    setPhiTerms(null);
+    inputRef.current?.focus();
   };
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-1">
-        <div className="text-[10px] tracking-widest uppercase text-[#a3533a] font-bold">Messages</div>
+        <div className="text-[11px] tracking-widest uppercase text-[#a3533a] font-bold">Messages</div>
         <h2 className="text-[30px] font-normal tracking-tight text-[#1e2a28] m-0">Patient conversations</h2>
-        <p className="text-[13px] text-[#1e2a28]/60 mt-1 max-w-lg leading-relaxed">
+        <p className="text-[13px] text-[#1e2a28]/70 mt-1 max-w-lg leading-relaxed">
           Confirmations, reschedules and replies — all two-way SMS in one inbox.
         </p>
       </div>
@@ -74,7 +73,7 @@ export const CleanMessages: React.FC<CleanMessagesProps> = ({
                 key={c.id}
                 onClick={() => {
                   setActiveId(c.id);
-                  setPhiNotice(false);
+                  setPhiTerms(null);
                 }}
                 className={`w-full p-3.5 px-4 flex items-center gap-3 text-left transition-colors ${
                   isAct ? 'bg-[#a3533a]/10' : 'hover:bg-[#1e2a28]/5'
@@ -88,9 +87,9 @@ export const CleanMessages: React.FC<CleanMessagesProps> = ({
                     <strong className="text-[12.5px] font-semibold text-[#1e2a28] truncate">
                       {maskName(c.patient)}
                     </strong>
-                    <span className="text-[10px] text-[#1e2a28]/50 shrink-0 font-mono">{c.time}</span>
+                    <span className="text-[11px] text-[#1e2a28]/70 shrink-0 tabular-nums">{c.time}</span>
                   </div>
-                  <p className="text-[11.5px] text-[#1e2a28]/60 truncate mt-1">
+                  <p className="text-[11.5px] text-[#1e2a28]/70 truncate mt-1">
                     {c.lastFrom === 'practice' ? 'You: ' : ''}{c.preview}
                   </p>
                 </div>
@@ -111,10 +110,10 @@ export const CleanMessages: React.FC<CleanMessagesProps> = ({
                 </div>
                 <div>
                   <strong className="text-[13px] font-semibold block">{maskName(active.patient)}</strong>
-                  <span className="text-[10.5px] text-[#1e2a28]/55 font-mono">{active.phone}</span>
+                  <span className="text-[11px] text-[#1e2a28]/70 tabular-nums">{maskPhone(active.phone)}</span>
                 </div>
               </div>
-              <span className="text-[9px] font-semibold px-2 py-0.5 border border-[#1e2a28]/15 uppercase text-[#1e2a28]/60">
+              <span className="text-[11px] font-semibold px-2 py-0.5 border border-[#1e2a28]/15 uppercase text-[#1e2a28]/70">
                 {active.status}
               </span>
             </div>
@@ -133,17 +132,23 @@ export const CleanMessages: React.FC<CleanMessagesProps> = ({
                       }`}
                     >
                       <div>{m.text}</div>
-                      <span className="block text-[9px] opacity-60 mt-1 text-right">{m.time}</span>
+                      <span className="block text-[11px] opacity-80 mt-1 text-right">{m.time}</span>
                     </div>
                   </div>
                 );
               })}
             </div>
 
-            {/* Scrubber alert if ePHI prevented */}
-            {phiNotice && (
-              <div className="p-2 px-3 bg-[#a3533a]/15 text-[#a3533a] text-xs border-t border-[#a3533a]/30">
-                Notice: Specific health diagnostic terms were sanitized to protect patient ePHI (§ 164.530).
+            {phiTerms && (
+              <div role="alert" className="p-3 bg-[#a3533a]/10 text-[#1e2a28] text-xs border-t border-[#a3533a]/40 space-y-2">
+                <div>
+                  <strong>This message was not sent.</strong> Texts are not a secure channel, and it mentions health details ({phiTerms.join(', ')}).
+                  Remove them, or start from our generic wording.
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => { setPhiTerms(null); inputRef.current?.focus(); }} className="px-3 py-1.5 border border-[#1e2a28]/40 font-semibold">Edit message</button>
+                  <button type="button" onClick={useSafeWording} className="px-3 py-1.5 bg-[#1e2a28] text-[#f4f0e8] font-semibold">Use safe wording</button>
+                </div>
               </div>
             )}
 
@@ -151,6 +156,8 @@ export const CleanMessages: React.FC<CleanMessagesProps> = ({
             <form onSubmit={handleSend} className="p-3 border-t border-[#1e2a28]/12 flex gap-2 bg-white/60">
               <input
                 type="text"
+                ref={inputRef}
+                aria-label="Message"
                 value={inputVal}
                 onChange={(e) => setInputVal(e.target.value)}
                 placeholder="Write a message…"
@@ -165,7 +172,7 @@ export const CleanMessages: React.FC<CleanMessagesProps> = ({
             </form>
           </div>
         ) : (
-          <div className="p-8 text-center text-[#1e2a28]/50 border border-[#1e2a28]/15 bg-white/40">
+          <div className="p-8 text-center text-[#1e2a28]/70 border border-[#1e2a28]/15 bg-white/40">
             Select a conversation to reply
           </div>
         )}

@@ -7,6 +7,7 @@ export const PRACTICES: Record<string, PracticeInfo> = {
     initials: 'LD',
     tagline: 'Comprehensive Dental Care & Fast Scheduling',
     timezone: 'America/Chicago',
+    ehr: 'Open Dental',
     address: '9420 Elm Creek Blvd N, Maple Grove, MN 55369',
     phone: '(763) 555-0100',
     providers: [
@@ -59,8 +60,8 @@ export const STAFF_USERS: StaffUser[] = [
     id: 'dr-mensah',
     name: 'Dr. Kwame Mensah, DDS',
     initials: 'NM',
-    role: 'dentist',
-    title: 'Lead Dentist & Practice Director',
+    role: 'owner',
+    title: 'Lead Dentist & Practice Owner',
     practice: 'Lakeside Dental',
   },
   {
