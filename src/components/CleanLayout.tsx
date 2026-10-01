@@ -1,32 +1,23 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { NavLink, Outlet, useLocation } from 'react-router';
+import { useAudit, useAuditVerify } from '../api/hooks';
+import { useAuth } from '../auth/AuthContext';
 import { useHIPAA, validatePin } from '../context/HIPAAContext';
-import { usePractice, ViewRole } from '../context/PracticeContext';
+import { roleLabel, usePractice } from '../context/PracticeContext';
 import { todayLong } from '../lib/format';
 import {
   CalendarDays, Eye, EyeOff, LayoutDashboard, ListChecks, Lock, Menu, MessageSquare, RefreshCcw,
-  Settings as SettingsIcon, ShieldCheck, Users, X,
+  LogOut, Settings as SettingsIcon, ShieldCheck, Users, X,
 } from 'lucide-react';
 
-interface CleanLayoutProps {
-  children: React.ReactNode;
-  activeView: string;
-  onNavigate: (view: string) => void;
-  onOpenBooking: () => void;
-}
-
 const NAV = [
-  { id: 'dashboard', label: 'Dashboard', Icon: LayoutDashboard },
-  { id: 'today', label: 'Today', Icon: CalendarDays },
-  { id: 'recovery', label: 'Recovery', Icon: RefreshCcw },
-  { id: 'messages', label: 'Messages', Icon: MessageSquare },
-  { id: 'patients', label: 'Patients', Icon: Users },
-  { id: 'waitlist', label: 'Waitlist', Icon: ListChecks },
-  { id: 'settings', label: 'Settings', Icon: SettingsIcon },
-];
-
-const ROLES: { id: ViewRole; label: string }[] = [
-  { id: 'front_desk', label: 'Front desk' },
-  { id: 'owner', label: 'Owner' },
+  { path: '/dashboard', label: 'Dashboard', Icon: LayoutDashboard },
+  { path: '/today', label: 'Today', Icon: CalendarDays },
+  { path: '/recovery', label: 'Recovery', Icon: RefreshCcw },
+  { path: '/messages', label: 'Messages', Icon: MessageSquare },
+  { path: '/patients', label: 'Patients', Icon: Users },
+  { path: '/waitlist', label: 'Waitlist', Icon: ListChecks },
+  { path: '/settings', label: 'Settings', Icon: SettingsIcon },
 ];
 
 /** Full-screen lock. Opaque (not see-through) so patient data is never visible behind it. */
@@ -94,12 +85,17 @@ const ScreenLock: React.FC = () => {
   );
 };
 
-export const CleanLayout: React.FC<CleanLayoutProps> = ({ children, activeView, onNavigate, onOpenBooking }) => {
-  const { isLocked, lock, privacyShield, togglePrivacyShield, auditTrail, logAudit } = useHIPAA();
-  const { practice, user, role, setRole } = usePractice();
+export const CleanLayout: React.FC = () => {
+  const { isLocked, lock, privacyShield, togglePrivacyShield, auditTrail } = useHIPAA();
+  const { practice, user, role } = usePractice();
+  const { logout } = useAuth();
+  const { pathname } = useLocation();
+  const isOwner = role === 'owner';
   const [showAudit, setShowAudit] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const auditBtn = useRef<HTMLButtonElement>(null);
+  const serverLog = useAudit(showAudit && isOwner);
+  const verify = useAuditVerify(showAudit && isOwner);
 
   useEffect(() => {
     if (!showAudit) return;
@@ -113,14 +109,8 @@ export const CleanLayout: React.FC<CleanLayoutProps> = ({ children, activeView, 
     auditBtn.current?.focus();
   };
 
-  const switchRole = (next: ViewRole) => {
-    if (next === role) return;
-    setRole(next);
-    logAudit('ROLE_SWITCH', `Demo view switched to ${next === 'owner' ? 'Owner' : 'Front desk'}`);
-  };
-
   const titles: Record<string, { title: string; sub: string }> = {
-    dashboard: { title: 'Dashboard', sub: `${role === 'owner' ? 'Owner' : 'Front desk'} view · ${practice.name}` },
+    dashboard: { title: 'Dashboard', sub: `${roleLabel(role)} view · ${practice.name}` },
     today: { title: 'Today', sub: `${todayLong(practice.timezone)} · ${practice.name}` },
     recovery: { title: 'Recovery', sub: role === 'owner' ? 'Openings, offers & estimated revenue recovered' : 'Openings, offers & recovery rate' },
     messages: { title: 'Messages', sub: 'Two-way SMS conversations with patients' },
@@ -128,7 +118,7 @@ export const CleanLayout: React.FC<CleanLayoutProps> = ({ children, activeView, 
     waitlist: { title: 'Waitlist', sub: 'Everyone ready to take an earlier opening' },
     settings: { title: 'Settings', sub: 'Messaging, screen lock & practice preferences' },
   };
-  const current = titles[activeView] ?? { title: practice.name, sub: '' };
+  const current = titles[pathname.split('/')[1] ?? ''] ?? { title: practice.name, sub: '' };
 
   return (
     <>
@@ -154,30 +144,30 @@ export const CleanLayout: React.FC<CleanLayoutProps> = ({ children, activeView, 
           </div>
 
           <nav aria-label="Main" className="px-3 flex-1 space-y-1">
-            {NAV.map(({ id, label, Icon }) => {
-              const active = activeView === id;
-              return (
-                <button
-                  key={id}
-                  aria-current={active ? 'page' : undefined}
-                  onClick={() => { onNavigate(id); setMenuOpen(false); }}
-                  className={`w-full flex items-center gap-3 px-3 min-h-[40px] text-[13px] font-medium transition-colors text-left ${
-                    active ? 'bg-[#1e2a28] text-[#f4f0e8]' : 'text-[#1e2a28]/80 hover:bg-[#1e2a28]/5 hover:text-[#1e2a28]'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  <span>{label}</span>
-                </button>
-              );
-            })}
+            {NAV.map(({ path, label, Icon }) => (
+              <NavLink
+                key={path}
+                to={path}
+                onClick={() => setMenuOpen(false)}
+                className={({ isActive }) =>
+                  `w-full flex items-center gap-3 px-3 min-h-[40px] text-[13px] font-medium transition-colors text-left ${
+                    isActive ? 'bg-[#1e2a28] text-[#f4f0e8]' : 'text-[#1e2a28]/80 hover:bg-[#1e2a28]/5 hover:text-[#1e2a28]'
+                  }`
+                }
+              >
+                <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>{label}</span>
+              </NavLink>
+            ))}
             <div className="pt-4 px-3">
-              <button
-                onClick={() => { onOpenBooking(); setMenuOpen(false); }}
+              <NavLink
+                to="/book"
+                onClick={() => setMenuOpen(false)}
                 className="w-full py-2 px-3 border border-[#a3533a]/60 text-[#a3533a] text-xs font-semibold hover:bg-[#a3533a]/10 text-left flex items-center justify-between"
               >
-                <span>Patient booking page</span>
+                <span>Book an appointment</span>
                 <span aria-hidden="true">↗</span>
-              </button>
+              </NavLink>
             </div>
           </nav>
 
@@ -186,22 +176,12 @@ export const CleanLayout: React.FC<CleanLayoutProps> = ({ children, activeView, 
               <div aria-hidden="true" className="w-8 h-8 rounded-full border border-[#1e2a28]/40 flex items-center justify-center font-bold text-[11px]">{user.initials}</div>
               <div className="min-w-0 flex-1">
                 <div className="text-[12px] font-semibold truncate">{user.name}</div>
-                <div className="text-[11px] text-[#1e2a28]/70 truncate">{role === 'owner' ? 'Owner' : 'Front desk'} · {practice.name}</div>
+                <div className="text-[11px] text-[#1e2a28]/70 truncate">{roleLabel(role)} · {practice.name}</div>
               </div>
             </div>
-            <div role="group" aria-label="Demo: view as" className="flex border border-[#1e2a28]/30 text-[11px] font-semibold">
-              {ROLES.map((r) => (
-                <button
-                  key={r.id}
-                  aria-pressed={role === r.id}
-                  onClick={() => switchRole(r.id)}
-                  className={`flex-1 py-1.5 ${role === r.id ? 'bg-[#1e2a28] text-[#f4f0e8]' : 'text-[#1e2a28]/80 hover:bg-[#1e2a28]/5'}`}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
-            <div className="text-[11px] text-[#1e2a28]/70">Demo: switch the view. Real logins assign the role.</div>
+            <button onClick={logout} className="w-full flex items-center justify-center gap-1.5 py-1.5 border border-[#1e2a28]/30 text-[11px] font-semibold text-[#1e2a28]/80 hover:bg-[#1e2a28]/5">
+              <LogOut className="w-3.5 h-3.5" aria-hidden="true" /> Sign out
+            </button>
           </div>
         </aside>
 
@@ -251,7 +231,7 @@ export const CleanLayout: React.FC<CleanLayoutProps> = ({ children, activeView, 
           </header>
 
           <main id="main" tabIndex={-1} className="flex-1 p-6 md:p-9 max-w-[1180px] w-full mx-auto">
-            {children}
+            <Outlet />
           </main>
         </div>
       </div>
@@ -270,22 +250,35 @@ export const CleanLayout: React.FC<CleanLayoutProps> = ({ children, activeView, 
                 <X className="w-4 h-4" aria-hidden="true" />
               </button>
             </div>
+            {isOwner && verify.data && (
+              <div role="status" className={`mt-3 text-[11px] font-semibold ${verify.data.intact ? 'text-emerald-800' : 'text-[#a3533a]'}`}>
+                {verify.data.intact ? 'Tamper check: the log is intact ✔' : `Tamper check FAILED at entry #${verify.data.firstBrokenSeq}`}
+              </div>
+            )}
             <div className="flex-1 overflow-y-auto my-3 divide-y divide-[#1e2a28]/10 text-xs">
-              {auditTrail.length === 0 ? (
-                <div className="py-6 text-center text-[#1e2a28]/70">Activity is recorded here as staff use the app.</div>
+              {isOwner ? (
+                serverLog.isLoading ? <div className="py-6 text-center text-[#1e2a28]/70">Loading…</div> :
+                serverLog.isError ? <div className="py-6 text-center text-[#a3533a]">Could not load the log.</div> :
+                (serverLog.data ?? []).map((e) => (
+                  <div key={e.seq} className="py-2 flex items-center justify-between text-[12px]">
+                    <span className="tabular-nums text-[#1e2a28]/70">#{e.seq} · {new Date(e.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {e.actorRole}</span>
+                    <span className="font-semibold">{e.action}</span>
+                  </div>
+                ))
+              ) : auditTrail.length === 0 ? (
+                <div className="py-6 text-center text-[#1e2a28]/70">Activity from this session appears here.</div>
               ) : (
                 auditTrail.map((e) => (
                   <div key={e.id} className="py-2 space-y-0.5">
-                    <div className="flex items-center justify-between text-[#1e2a28]/70 text-[11px] tabular-nums">
-                      <span>{e.time} · {e.user}</span>
-                      <span>{e.action}</span>
-                    </div>
+                    <div className="flex items-center justify-between text-[#1e2a28]/70 text-[11px] tabular-nums"><span>{e.time} · {e.user}</span><span>{e.action}</span></div>
                     <div className="text-[12px]">{e.details}</div>
                   </div>
                 ))
               )}
             </div>
-            <p className="text-[11px] text-[#1e2a28]/70 m-0 mb-3">Demo log: kept in this browser tab only and cleared on refresh.</p>
+            <p className="text-[11px] text-[#1e2a28]/70 m-0 mb-3">
+              {isOwner ? 'Practice-wide log, stored on the server. Entries cannot be edited or deleted.' : 'This session only. The owner can see the full practice log.'}
+            </p>
             <div className="pt-2 border-t border-[#1e2a28]/15 flex justify-end">
               <button onClick={closeAudit} className="px-3 py-1.5 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold">Close</button>
             </div>

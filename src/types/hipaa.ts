@@ -17,7 +17,6 @@ export type AuditAction =
   | 'PIN_SET'
   | 'PIN_CHANGED'
   | 'IDLE_TIMEOUT_CHANGED'
-  | 'ROLE_SWITCH'
   | 'PRIVACY_SHIELD'
   | 'EPHI_BLOCKED'
   | 'SMS_SENT'
@@ -65,29 +64,6 @@ export interface Appointment {
   notes?: string;
 }
 
-export interface RecoveryOpening {
-  id: string;
-  type: 'No-show' | 'Cancellation' | 'Gap';
-  kind: 'no-show' | 'cancellation' | 'gap';
-  time: string;
-  doctor: string;
-  patient: string;
-  detail: string;
-  held?: boolean;
-  filledBy?: string;
-  value?: number;
-  offers: RecoveryOffer[];
-}
-
-export interface RecoveryOffer {
-  name: string;
-  score: number;
-  status: 'sent' | 'declined' | 'expired' | 'stopped' | 'filled' | 'withdrawn' | 'lost';
-  expiresAt: number;
-  ch: 'SMS' | 'email';
-  flag?: boolean;
-}
-
 export interface WaitlistEntry {
   id: string;
   name: string;
@@ -98,36 +74,6 @@ export interface WaitlistEntry {
   when: string;
   stopped?: boolean;
   phone?: string;
-}
-
-export interface ChatMessage {
-  from: 'practice' | 'patient';
-  time: string;
-  text: string;
-  sanitized?: boolean;
-  scrubbedWarning?: string;
-}
-
-export interface Conversation {
-  id: string;
-  patient: string;
-  initials: string;
-  phone: string;
-  status: string;
-  time: string;
-  unread: boolean;
-  lastFrom: 'practice' | 'patient';
-  preview: string;
-  messages: ChatMessage[];
-}
-
-export interface BAAItem {
-  vendor: string;
-  service: string;
-  baaSignedDate: string;
-  status: 'Active' | 'Review Due';
-  encryptionLevel: string;
-  dataClassification: string;
 }
 
 export interface PracticeInfo {

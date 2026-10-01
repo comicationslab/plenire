@@ -1,13 +1,16 @@
 import React, { useState } from 'react';
 import { useHIPAA } from '../../context/HIPAAContext';
-import { Patient } from '../../types/hipaa';
+import { usePractice } from '../../context/PracticeContext';
+import { toPatient } from '../../api/format';
+import { usePatients, usePatientSummary } from '../../api/hooks';
+import { QueryBoundary } from '../ui/QueryBoundary';
 
-interface CleanPatientsProps {
-  patients: Patient[];
-}
-
-export const CleanPatients: React.FC<CleanPatientsProps> = ({ patients }) => {
+export const CleanPatients: React.FC = () => {
   const { maskName, maskPhone, maskEmail } = useHIPAA();
+  const { practice } = usePractice();
+  const pq = usePatients();
+  const summary = usePatientSummary();
+  const patients = (pq.data ?? []).map((p) => toPatient(p, practice.timezone));
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('All patients');
 
@@ -27,21 +30,22 @@ export const CleanPatients: React.FC<CleanPatientsProps> = ({ patients }) => {
         </p>
       </div>
 
+      <QueryBoundary queries={[pq, summary]}>
       {/* Metric row */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="p-4 border border-[#1e2a28]/15 bg-white/40">
           <div className="text-[11px] text-[#1e2a28]/70 font-semibold uppercase tracking-wider">Total patients</div>
-          <div className="text-[29px] font-medium text-[#1e2a28] mt-2 tracking-tight">1,284</div>
-          <div className="text-[11px] text-[#1e2a28]/70 mt-1">From your practice records</div>
+          <div className="text-[29px] font-medium text-[#1e2a28] mt-2 tracking-tight">{summary.data?.total ?? 0}</div>
+          <div className="text-[11px] text-[#1e2a28]/70 mt-1">Everyone in your practice</div>
         </div>
         <div className="p-4 border border-[#1e2a28]/15 bg-white/40">
           <div className="text-[11px] text-[#1e2a28]/70 font-semibold uppercase tracking-wider">Texting consent</div>
-          <div className="text-[29px] font-medium text-[#1e2a28] mt-2 tracking-tight">842</div>
+          <div className="text-[29px] font-medium text-[#1e2a28] mt-2 tracking-tight">{summary.data?.consented ?? 0}</div>
           <div className="text-[11px] text-[#1e2a28]/70 mt-1">Patients ready for outreach</div>
         </div>
         <div className="p-4 border border-[#1e2a28]/15 bg-white/40">
-          <div className="text-[11px] text-[#1e2a28]/70 font-semibold uppercase tracking-wider">Recovered this month</div>
-          <div className="text-[29px] font-medium text-[#a3533a] mt-2 tracking-tight">24</div>
+          <div className="text-[11px] text-[#1e2a28]/70 font-semibold uppercase tracking-wider">Recovered · 28 days</div>
+          <div className="text-[29px] font-medium text-[#a3533a] mt-2 tracking-tight">{summary.data?.recovered ?? 0}</div>
           <div className="text-[11px] text-[#1e2a28]/70 mt-1">Patients who reclaimed a seat</div>
         </div>
       </div>
@@ -122,6 +126,7 @@ export const CleanPatients: React.FC<CleanPatientsProps> = ({ patients }) => {
           )}
         </div>
       </div>
+      </QueryBoundary>
     </div>
   );
 };

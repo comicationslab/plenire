@@ -1,17 +1,17 @@
 import React, { useState } from 'react';
-import { useHIPAA } from '../../context/HIPAAContext';
+import { useNavigate } from 'react-router';
+import { ApiError } from '../../api/client';
+import { useBook } from '../../api/hooks';
 import { usePractice } from '../../context/PracticeContext';
-import { bookingRef as makeBookingRef, initialsOf, todayShort, uid } from '../../lib/format';
+import { toE164 } from '../../lib/format';
 import { TCPA_CONSENT_STATEMENT } from '../../services/hipaaCompliance';
-import { Appointment, Patient } from '../../types/hipaa';
 
-interface CleanBookingProps {
-  onBack: () => void;
-  onBooked: (appt: Appointment, patient: Patient) => void;
-}
-
-export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) => {
-  const { logAudit } = useHIPAA();
+/** Staff-assisted booking. The patient-facing public page (with live availability) is a later phase. */
+export const CleanBooking: React.FC = () => {
+  const nav = useNavigate();
+  const onBack = () => nav('/dashboard');
+  const book = useBook();
+  const [bookError, setBookError] = useState('');
   const { practice } = usePractice();
 
   const [step, setStep] = useState(1);
@@ -38,7 +38,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
     const d = new Date();
     d.setDate(d.getDate() + i + 1);
     return {
-      iso: d.toISOString().slice(0, 10),
+      iso: d.toLocaleDateString('en-CA'),
       dow: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()],
       num: d.getDate(),
       closed: d.getDay() === 0,
@@ -51,10 +51,10 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
     { time: '10:00', label: '10:00 AM' },
     { time: '10:30', label: '10:30 AM' },
     { time: '11:00', label: '11:00 AM' },
-    { time: '01:30', label: '1:30 PM' },
-    { time: '02:00', label: '2:00 PM' },
-    { time: '02:30', label: '2:30 PM' },
-    { time: '03:00', label: '3:00 PM' },
+    { time: '13:30', label: '1:30 PM' },
+    { time: '14:00', label: '2:00 PM' },
+    { time: '14:30', label: '2:30 PM' },
+    { time: '15:00', label: '3:00 PM' },
   ];
 
   const isValidForm =
@@ -68,53 +68,25 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
       setStep((s) => s + 1);
       window.scrollTo(0, 0);
     } else {
-      const ref = makeBookingRef();
-      setBookingRef(ref);
-
-      const resolvedProvider =
-        provider === 'any'
-          ? (practice.providers.find((p) => p.op)?.name ?? 'Your provider')
-          : practice.providers.find((p) => p.id === provider)?.name || (practice.providers.find((p) => p.op)?.name ?? 'Your provider');
-      setBookedWith(resolvedProvider);
-
-      const [h, m] = (time || '09:30').split(':').map(Number);
-      const mins = h * 60 + m;
-      const formatted = `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
-
-      const newAppt: Appointment = {
-        id: uid('appt'),
-        time: formatted,
-        mins,
-        dur: visitType.duration,
-        patient: `${firstName} ${lastName}`,
-        initials: initialsOf(`${firstName} ${lastName}`),
-        provider: resolvedProvider,
-        op: 'Op 1',
-        treatment: visitType.name,
-        status: 'scheduled',
-      };
-
-      const newPat: Patient = {
-        id: uid('p'),
-        name: `${firstName} ${lastName}`,
-        initials: initialsOf(`${firstName} ${lastName}`),
-        phone,
-        email,
-        lastVisit: date || todayShort(practice.timezone),
-        recentVisit: `${visitType.name} · ${formatted}`,
-        status: 'Active',
-        smsConsent: consent,
-        smsConsentAt: consent ? new Date().toISOString() : undefined,
-      };
-
-      onBooked(newAppt, newPat);
-      logAudit('PATIENT_BOOKED', `Online booking ref ${ref} for ${firstName} ${lastName}`);
-
-      setStep(5);
-      window.scrollTo(0, 0);
-
-      setTimeout(() => setNotifEmail(true), 900);
-      if (consent) setTimeout(() => setNotifSms(true), 1500);
+      setBookError('');
+      book.mutate(
+        {
+          firstName: firstName.trim(), lastName: lastName.trim(), phone: toE164(phone), email: email.trim() || null,
+          newPatient, smsConsent: consent, notes: notes.trim() || null, date: date!, time: time!,
+          durationMin: visitType.duration, treatment: visitType.name, providerId: provider === 'any' ? null : provider,
+        },
+        {
+          onSuccess: (r) => {
+            setBookingRef(r.reference);
+            setBookedWith(r.providerName);
+            setStep(5);
+            window.scrollTo(0, 0);
+            setTimeout(() => setNotifEmail(true), 900);
+            if (consent) setTimeout(() => setNotifSms(true), 1500);
+          },
+          onError: (e) => setBookError(e instanceof ApiError ? (e.code === 'SLOT_TAKEN' ? 'That time was just taken. Please choose another time.' : e.message) : 'Could not book. Try again.'),
+        },
+      );
     }
   };
 
@@ -122,12 +94,13 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
     if (step === 1) return !visitType;
     if (step === 2) return !(date && time);
     if (step === 3) return !isValidForm;
-    return false;
+    return book.isPending;
   };
 
   return (
     <div className="min-h-screen bg-[#f4f0e8] text-[#1e2a28] flex flex-col justify-between">
       <div className="max-w-[480px] w-full mx-auto my-0 sm:my-4 border-0 sm:border border-[#1e2a28]/14 bg-[#f4f0e8] flex flex-col min-h-screen sm:min-h-[calc(100vh-32px)]">
+        {bookError && <div role="alert" className="m-4 p-3 border border-[#a3533a]/50 bg-[#a3533a]/[0.08] text-xs font-semibold">{bookError}</div>}
         {/* Topbar */}
         <div className="p-4 px-5 border-b border-[#1e2a28]/14 bg-[#f4f0e8]">
           <div className="flex items-center justify-between">
@@ -228,7 +201,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                     </button>
 
                     {practice.providers
-                      .filter((p) => p.id !== 'any' && visitType.providers.includes(p.id))
+                      .filter((p) => visitType.providers.includes(p.name))
                       .map((p) => (
                         <button
                           key={p.id}
@@ -437,7 +410,7 @@ export const CleanBooking: React.FC<CleanBookingProps> = ({ onBack, onBooked }) 
                 </div>
                 <div className="flex justify-between">
                   <span className="text-[#1e2a28]/70">Provider</span>
-                  <strong className="font-semibold">{provider === 'any' ? 'Any available provider' : provider}</strong>
+                  <strong className="font-semibold">{provider === 'any' ? 'Any available provider' : (practice.providers.find((p) => p.id === provider)?.name ?? '')}</strong>
                 </div>
               </div>
 

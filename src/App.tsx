@@ -1,97 +1,78 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
-import { PracticeProvider, usePractice } from './context/PracticeContext';
-import { HIPAAProvider } from './context/HIPAAContext';
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router';
+import { ApiError } from './api/client';
+import { AuthProvider, useAuth } from './auth/AuthContext';
 import { CleanLayout } from './components/CleanLayout';
-import { DashboardFrontDesk } from './components/views/DashboardFrontDesk';
-import { DashboardOwner } from './components/views/DashboardOwner';
-import { CleanToday } from './components/views/CleanToday';
-import { CleanRecovery } from './components/views/CleanRecovery';
+import { CleanBooking } from './components/patient/CleanBooking';
 import { CleanMessages } from './components/views/CleanMessages';
 import { CleanPatients } from './components/views/CleanPatients';
-import { CleanWaitlist } from './components/views/CleanWaitlist';
+import { CleanRecovery } from './components/views/CleanRecovery';
 import { CleanSettings } from './components/views/CleanSettings';
-import { CleanBooking } from './components/patient/CleanBooking';
-import {
-  INITIAL_APPOINTMENTS,
-  INITIAL_CONVERSATIONS,
-  INITIAL_PATIENTS,
-  INITIAL_RECOVERY,
-  INITIAL_WAITLIST,
-} from './data/initialData';
-import { Appointment, Conversation, Patient, RecoveryOpening, WaitlistEntry } from './types/hipaa';
-import { uid } from './lib/format';
+import { CleanToday } from './components/views/CleanToday';
+import { CleanWaitlist } from './components/views/CleanWaitlist';
+import { DashboardFrontDesk } from './components/views/DashboardFrontDesk';
+import { DashboardOwner } from './components/views/DashboardOwner';
+import { HIPAAProvider } from './context/HIPAAContext';
+import { PracticeProvider, usePractice } from './context/PracticeContext';
+import { Login } from './pages/Login';
 
-function AppShell() {
-  const { role } = usePractice();
-  const [appMode, setAppMode] = useState<'staff' | 'booking'>('staff');
-  const [activeView, setActiveView] = useState<string>('dashboard');
-
-  const [appointments, setAppointments] = useState<Appointment[]>(INITIAL_APPOINTMENTS);
-  const [openings, setOpenings] = useState<RecoveryOpening[]>(INITIAL_RECOVERY);
-  const [waitlist, setWaitlist] = useState<WaitlistEntry[]>(INITIAL_WAITLIST);
-  const [patients, setPatients] = useState<Patient[]>(INITIAL_PATIENTS);
-  const [conversations, setConversations] = useState<Conversation[]>(INITIAL_CONVERSATIONS);
-
-  const handleAddRecoveryOpening = (newOp: Omit<RecoveryOpening, 'id' | 'offers'>) => {
-    setOpenings((prev) => [{ id: uid('rec'), ...newOp, offers: [] }, ...prev]);
-  };
-
-  const handleBooked = (appt: Appointment, patient: Patient) => {
-    setAppointments((prev) => [...prev, appt]);
-    setPatients((prev) => [patient, ...prev]);
-  };
-
-  if (appMode === 'booking') {
-    return <CleanBooking onBack={() => setAppMode('staff')} onBooked={handleBooked} />;
-  }
-
-  return (
-    <CleanLayout activeView={activeView} onNavigate={setActiveView} onOpenBooking={() => setAppMode('booking')}>
-      {activeView === 'dashboard' &&
-        (role === 'owner' ? (
-          <DashboardOwner openings={openings} onNavigate={setActiveView} />
-        ) : (
-          <DashboardFrontDesk openings={openings} conversations={conversations} appointments={appointments} onNavigate={setActiveView} />
-        ))}
-
-      {activeView === 'today' && (
-        <CleanToday
-          appointments={appointments}
-          setAppointments={setAppointments}
-          setPatients={setPatients}
-          onGoToRecovery={() => setActiveView('recovery')}
-          onAddRecoveryOpening={handleAddRecoveryOpening}
-        />
-      )}
-
-      {activeView === 'recovery' && (
-        <CleanRecovery
-          openings={openings}
-          setOpenings={setOpenings}
-          waitlist={waitlist}
-          setWaitlist={setWaitlist}
-          patients={patients}
-          setPatients={setPatients}
-          setConversations={setConversations}
-        />
-      )}
-
-      {activeView === 'messages' && (
-        <CleanMessages conversations={conversations} setConversations={setConversations} />
-      )}
-      {activeView === 'patients' && <CleanPatients patients={patients} />}
-      {activeView === 'waitlist' && <CleanWaitlist waitlist={waitlist} />}
-      {activeView === 'settings' && <CleanSettings />}
-    </CleanLayout>
-  );
-}
-
-export default function App() {
+/** Everything behind sign-in: loads the practice, then starts the screen lock. */
+function RequireAuth() {
+  const { session } = useAuth();
+  if (!session) return <Navigate to="/login" replace />;
   return (
     <PracticeProvider>
       <HIPAAProvider>
-        <AppShell />
+        <Outlet />
       </HIPAAProvider>
     </PracticeProvider>
+  );
+}
+
+/** The dashboard depends on who you are. The server enforces it too. */
+function Dashboard() {
+  return usePractice().role === 'owner' ? <DashboardOwner /> : <DashboardFrontDesk />;
+}
+
+export default function App() {
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 5_000,
+            // Don't hammer the server on errors that retrying can't fix (bad login, forbidden, not found).
+            retry: (count, err) => !(err instanceof ApiError && err.status >= 400 && err.status < 500) && count < 2,
+            refetchOnWindowFocus: true,
+          },
+        },
+      }),
+  );
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route element={<RequireAuth />}>
+              <Route path="book" element={<CleanBooking />} />
+              <Route element={<CleanLayout />}>
+                <Route index element={<Navigate to="/dashboard" replace />} />
+                <Route path="dashboard" element={<Dashboard />} />
+                <Route path="today" element={<CleanToday />} />
+                <Route path="recovery" element={<CleanRecovery />} />
+                <Route path="messages" element={<CleanMessages />} />
+                <Route path="patients" element={<CleanPatients />} />
+                <Route path="waitlist" element={<CleanWaitlist />} />
+                <Route path="settings" element={<CleanSettings />} />
+              </Route>
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
+    </QueryClientProvider>
   );
 }

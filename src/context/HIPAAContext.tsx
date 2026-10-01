@@ -10,6 +10,10 @@ import {
   maskTreatment as maskTreatmentFn,
 } from '../services/hipaaCompliance';
 import { clockNow, uid } from '../lib/format';
+import { reportWorkstationEvent } from '../api/hooks';
+
+/** Events that are also written to the practice's tamper-evident server log. */
+const SERVER_LOGGED = new Set<AuditAction>(['WORKSTATION_LOCK', 'WORKSTATION_AUTO_LOCK', 'WORKSTATION_UNLOCK', 'UNLOCK_FAILED', 'PRIVACY_SHIELD', 'PIN_SET', 'PIN_CHANGED']);
 
 export interface AuditEntry {
   id: string;
@@ -112,6 +116,7 @@ export const HIPAAProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     (action: AuditAction, details: string) => {
       const entry: AuditEntry = { id: uid('aud'), time: clockNow(), user: user.name, role: user.role, action, details };
       setAuditTrail((prev) => [entry, ...prev].slice(0, 200));
+      if (SERVER_LOGGED.has(action)) void reportWorkstationEvent(action);
     },
     [user],
   );

@@ -1,36 +1,4 @@
-import { PracticeInfo } from '../types/hipaa';
-
-/**
- * Health-related terms that should not go out over SMS. This is a helpful safety net,
- * NOT a guarantee: keyword lists miss things. Real protection is the "minimum necessary"
- * message templates + staff training + a server-side check before sending.
- */
-export const PHI_RESTRICTED_KEYWORDS = [
-  'root canal', 'srp', 'scaling', 'planing', 'periodontal', 'perio', 'caries', 'cavity',
-  'abscess', 'extraction', 'extracted', 'implant', 'biopsy', 'crown prep', 'buildup',
-  'composite resin', 'amalgam', 'infection', 'antibiotic', 'anesthetic', 'nitrous',
-  'gingivitis', 'tooth #', 'quadrant', 'surgery', 'blood pressure', 'diabetes',
-  'allergic', 'allergy', 'deep cleaning',
-];
-
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-// Whole-word match (so "period" no longer trips "perio"), allowing simple plurals.
-const PHI_PATTERNS = PHI_RESTRICTED_KEYWORDS.map((term) => ({
-  term,
-  re: new RegExp(`(?<![a-z])${escapeRe(term)}${/\w$/.test(term) ? '(?:s|es)?(?![a-z])' : ''}`, 'i'),
-}));
-
-export function detectEPHI(text: string): { hasEPHI: boolean; detectedTerms: string[] } {
-  const detectedTerms = PHI_PATTERNS.filter((p) => p.re.test(text)).map((p) => p.term);
-  return { hasEPHI: detectedTerms.length > 0, detectedTerms };
-}
-
-/** Minimum-necessary reminder wording that staff can start from. */
-export function genericMessage(practice: Pick<PracticeInfo, 'name' | 'phone'>, firstName: string, time?: string): string {
-  const at = time ? ` at ${time}` : '';
-  return `Hi ${firstName || 'there'}, this is ${practice.name} regarding your upcoming appointment${at}. Please reply YES to confirm or call ${practice.phone} for details. Reply STOP to opt out.`;
-}
+export { PHI_RESTRICTED_KEYWORDS, detectEPHI, genericMessage } from '../../shared/phi';
 
 /** Screen Shield: hide identifying details when a monitor faces the waiting room. */
 export function maskName(fullName: string, shield: boolean): string {

@@ -1,27 +1,26 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router';
+import { ApiError } from '../../api/client';
+import { toAppointment, todayIn, zonedToIso } from '../../api/format';
+import { toE164 } from '../../lib/format';
+import { useAddWalkIn, useAppointments, useSetAppointmentStatus, useSetFollowUp } from '../../api/hooks';
 import { useHIPAA } from '../../context/HIPAAContext';
 import { usePractice } from '../../context/PracticeContext';
-import { initialsOf, todayShort, uid } from '../../lib/format';
-import { Appointment, Patient } from '../../types/hipaa';
+import { Appointment } from '../../types/hipaa';
+import { QueryBoundary } from '../ui/QueryBoundary';
 
-interface CleanTodayProps {
-  appointments: Appointment[];
-  setAppointments: React.Dispatch<React.SetStateAction<Appointment[]>>;
-  setPatients: React.Dispatch<React.SetStateAction<Patient[]>>;
-  onGoToRecovery: () => void;
-  onAddRecoveryOpening: (opening: any) => void;
-}
-
-export const CleanToday: React.FC<CleanTodayProps> = ({
-  appointments,
-  setAppointments,
-  setPatients,
-  onGoToRecovery,
-  onAddRecoveryOpening,
-}) => {
-  const { maskName, maskTreatment, logAudit } = useHIPAA();
+export const CleanToday: React.FC = () => {
+  const { maskName, maskTreatment } = useHIPAA();
   const { practice } = usePractice();
   const chairs = practice.providers.filter((p) => p.op);
+  const apptQuery = useAppointments();
+  const appointments = (apptQuery.data ?? []).filter((a) => a.status !== 'cancelled').map((a) => toAppointment(a, practice.timezone));
+  const setStatus = useSetAppointmentStatus();
+  const setFollowUp = useSetFollowUp();
+  const addWalkIn = useAddWalkIn();
+  const nav = useNavigate();
+  const [actionError, setActionError] = useState('');
+  const fail = (e: unknown) => setActionError(e instanceof ApiError ? e.message : 'Something went wrong');
 
   const [chairFilter, setChairFilter] = useState('all');
   const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
@@ -60,49 +59,31 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
 
   const handleStatusChange = (status: 'arrived' | 'completed' | 'noshow') => {
     if (!selectedAppt) return;
-    setAppointments((prev) =>
-      prev.map((a) =>
-        a.id === selectedAppt.id
-          ? { ...a, status, thanked: status === 'completed' ? true : a.thanked }
-          : a
-      )
-    );
-    setSelectedAppt((p) => (p ? { ...p, status } : null));
-
-    if (status === 'noshow') {
-      onAddRecoveryOpening({
-        type: 'No-show',
-        kind: 'no-show',
-        time: selectedAppt.time,
-        doctor: selectedAppt.provider,
-        patient: selectedAppt.patient,
-        detail: selectedAppt.treatment,
-      });
-      logAudit('NO_SHOW_RECORDED', `No-show recorded for ${selectedAppt.patient}`);
-    } else {
-      logAudit('APPT_UPDATE', `Updated ${selectedAppt.patient} status to ${status}`);
-    }
+    setActionError('');
+    // The server records the change, creates the recovery opening for a no-show, and writes the activity log.
+    setStatus.mutate({ id: selectedAppt.id, status }, {
+      onSuccess: () => setSelectedAppt((p) => (p ? { ...p, status, thanked: status === 'completed' ? true : p.thanked } : null)),
+      onError: fail,
+    });
   };
 
   const handleUndo = () => {
     if (!selectedAppt) return;
+    setActionError('');
     const nextStatus = selectedAppt.status === 'completed' ? 'arrived' : 'scheduled';
-    setAppointments((prev) =>
-      prev.map((a) => (a.id === selectedAppt.id ? { ...a, status: nextStatus } : a))
-    );
-    setSelectedAppt((p) => (p ? { ...p, status: nextStatus } : null));
-    logAudit('APPT_UNDO', `Reverted ${selectedAppt.patient} to ${nextStatus}`);
+    setStatus.mutate({ id: selectedAppt.id, status: nextStatus }, {
+      onSuccess: () => setSelectedAppt((p) => (p ? { ...p, status: nextStatus } : null)),
+      onError: fail,
+    });
   };
 
   const handleSaveFollowup = (preset: string) => {
     if (!selectedAppt) return;
-    setAppointments((prev) =>
-      prev.map((a) => (a.id === selectedAppt.id ? { ...a, followUp: preset } : a))
-    );
-    setSelectedAppt((p) => (p ? { ...p, followUp: preset } : null));
-    setFollowupOpen(false);
-    setCustomFollowup(false);
-    logAudit('FOLLOWUP_SET', `Followup set for ${selectedAppt.patient}: ${preset}`);
+    setActionError('');
+    setFollowUp.mutate({ id: selectedAppt.id, followUp: preset }, {
+      onSuccess: () => { setSelectedAppt((p) => (p ? { ...p, followUp: preset } : null)); setFollowupOpen(false); setCustomFollowup(false); },
+      onError: fail,
+    });
   };
 
   const handleSaveCustomFollowup = () => {
@@ -121,54 +102,27 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
       setWalkinError('Add patient name and visit type.');
       return;
     }
-    const [h, m] = walkinTime.split(':').map(Number);
-    const mins = h * 60 + m;
-    const clockH = h % 12 || 12;
-    const formatted = `${clockH}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
-    const initials = initialsOf(walkinName);
-    const pInfo = calendarProviders.find((p) => p.name === walkinProvider);
-
-    const newPatient: Patient = {
-      id: uid('p'),
-      name: walkinName.trim(),
-      initials,
-      phone: walkinPhone.trim() || 'Walk-in patient',
-      email: walkinEmail.trim() || 'No email provided',
-      lastVisit: todayShort(practice.timezone),
-      recentVisit: `${walkinTreatment} · ${formatted}`,
-      status: 'Active',
-      smsConsent: walkinConsent && /\d/.test(walkinPhone),
-      smsConsentAt: new Date().toISOString(),
-      walkIn: true,
-    };
-
-    const newAppt: Appointment = {
-      id: uid('appt'),
-      time: formatted,
-      mins,
-      dur: Number(walkinDuration),
-      patient: walkinName.trim(),
-      initials,
-      provider: walkinProvider,
-      op: pInfo?.op || 'Op 1',
-      treatment: walkinTreatment.trim(),
-      status: 'arrived',
-      walkIn: true,
-    };
-
-    setPatients((prev) => [newPatient, ...prev]);
-    setAppointments((prev) => [...prev, newAppt]);
-    logAudit('WALKIN_ADDED', `Walk-in added: ${walkinName} (${walkinTreatment})`);
-
-    setWalkinOpen(false);
-    setWalkinName('');
-    setWalkinPhone('');
-    setWalkinEmail('');
-    setWalkinError('');
+    const provider = chairs.find((p) => p.name === walkinProvider);
+    if (!provider) { setWalkinError('Choose a provider.'); return; }
+    const phone = walkinPhone.trim();
+    addWalkIn.mutate(
+      {
+        name: walkinName.trim(), phone: phone ? toE164(phone) : null, email: walkinEmail.trim() || null,
+        smsConsent: walkinConsent && /\d{7,}/.test(phone), providerId: provider.id,
+        startsAt: zonedToIso(todayIn(practice.timezone), walkinTime, practice.timezone),
+        durationMin: Number(walkinDuration), treatment: walkinTreatment.trim(),
+      },
+      {
+        onSuccess: () => { setWalkinOpen(false); setWalkinName(''); setWalkinPhone(''); setWalkinEmail(''); setWalkinError(''); },
+        onError: (err) => setWalkinError(err instanceof ApiError ? err.message : 'Could not add the walk-in.'),
+      },
+    );
   };
 
   return (
+    <QueryBoundary queries={[apptQuery]}>
     <div className="space-y-6">
+      {actionError && <div role="alert" className="p-3 border border-[#a3533a]/50 bg-[#a3533a]/[0.08] text-xs font-semibold">{actionError}</div>}
       {/* Metric row */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <div className="p-4 border border-[#1e2a28]/15 bg-white/40">
@@ -518,7 +472,7 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
                 <button
                   onClick={() => {
                     setSelectedAppt(null);
-                    onGoToRecovery();
+                    nav('/recovery');
                   }}
                   className="w-full py-2 bg-[#a3533a] text-[#f4f0e8] text-xs font-semibold"
                 >
@@ -658,5 +612,6 @@ export const CleanToday: React.FC<CleanTodayProps> = ({
         </div>
       )}
     </div>
+    </QueryBoundary>
   );
 };

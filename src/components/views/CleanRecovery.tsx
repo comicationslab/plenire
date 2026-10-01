@@ -1,301 +1,171 @@
 import React, { useState } from 'react';
+import { ApiError } from '../../api/client';
+import { fmtTime } from '../../api/format';
+import { useOpenings, useRecoveryRate, useRevenue, useSendOffers, useSimulateReply } from '../../api/hooks';
 import { useHIPAA } from '../../context/HIPAAContext';
 import { usePractice } from '../../context/PracticeContext';
-import { estValue, recoverySummary } from '../../lib/metrics';
-import { clockNow, initialsOf, usd } from '../../lib/format';
+import { usdCents } from '../../lib/format';
 import { MetricCard } from '../ui/Metric';
-import { Conversation, Patient, RecoveryOpening, WaitlistEntry } from '../../types/hipaa';
+import { QueryBoundary } from '../ui/QueryBoundary';
 
-interface CleanRecoveryProps {
-  openings: RecoveryOpening[];
-  setOpenings: React.Dispatch<React.SetStateAction<RecoveryOpening[]>>;
-  waitlist: WaitlistEntry[];
-  setWaitlist: React.Dispatch<React.SetStateAction<WaitlistEntry[]>>;
-  patients: Patient[];
-  setPatients: React.Dispatch<React.SetStateAction<Patient[]>>;
-  setConversations: React.Dispatch<React.SetStateAction<Conversation[]>>;
-}
+const KIND_LABEL = { 'no-show': 'No-show', cancellation: 'Cancellation', gap: 'Gap' } as const;
+const OUTCOME_TEXT: Record<string, string> = {
+  booked: 'booked the slot', opted_out: 'opted out (STOP)', opted_in: 'opted back in', help: 'asked for help',
+  declined: 'passed on the offer', offer_unavailable: 'replied too late: the slot is gone', needs_staff: 'replied; needs a person to answer',
+};
 
-interface EngineLog { t: string; m: string; value?: number }
-
-export const CleanRecovery: React.FC<CleanRecoveryProps> = ({
-  openings,
-  setOpenings,
-  waitlist,
-  setWaitlist,
-  patients,
-  setPatients,
-  setConversations,
-}) => {
-  const { maskName, maskTreatment, logAudit } = useHIPAA();
+export const CleanRecovery: React.FC = () => {
+  const { maskName, maskTreatment } = useHIPAA();
   const { practice, canSeeRevenue } = usePractice();
-  const summary = recoverySummary(openings);
+  const tz = practice.timezone;
+
+  const openings = useOpenings();
+  const rate = useRecoveryRate();
+  const revenue = useRevenue(canSeeRevenue);
+  const sendOffers = useSendOffers();
+  const reply = useSimulateReply();
 
   const [replies, setReplies] = useState<Record<string, string>>({});
-  const [engineLogs, setEngineLogs] = useState<EngineLog[]>([
-    { t: '11:00 AM', m: 'No-show detected: Liam O\'Brien · 11:00 AM' },
-    { t: '10:20 AM', m: 'Tyler Green accepted 10:20 AM crown seat', value: 1150 },
-    { t: '09:00 AM', m: 'Marcus Bell accepted 9:00 AM prophy', value: 120 },
-  ]);
+  const [notice, setNotice] = useState<Record<string, string>>({}); // message per opening
+  const say = (openingId: string, msg: string) => setNotice((p) => ({ ...p, [openingId]: msg }));
+  const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong');
 
-  const addLog = (m: string, value?: number) => {
-    setEngineLogs((prev) => [{ t: clockNow(), m, value }, ...prev.slice(0, 10)]);
-  };
+  const list = openings.data ?? [];
+  const recoveredToday = list.filter((o) => o.filledByName).length;
+  const timeOf = (iso: string) => fmtTime(iso, tz);
 
-  const deliverConvo = (name: string, from: 'practice' | 'patient', text: string, status?: string) => {
-    const time = clockNow();
-    const knownPhone = patients.find((p) => p.name === name)?.phone ?? '';
-    setConversations((prev) => {
-      let existing = prev.find((c) => c.patient === name);
-      if (!existing) {
-        existing = {
-          id: name.toLowerCase().replace(/\W+/g, '-'),
-          patient: name,
-          initials: initialsOf(name),
-          phone: knownPhone,
-          status: status || 'Offer sent',
-          time,
-          unread: from === 'patient',
-          lastFrom: from,
-          preview: text,
-          messages: [{ from, time, text }],
-        };
-        return [existing, ...prev];
-      }
-      return prev.map((c) =>
-        c.patient === name
-          ? {
-              ...c,
-              time,
-              unread: from === 'patient',
-              lastFrom: from,
-              preview: text,
-              status: status || c.status,
-              messages: [...c.messages, { from, time, text }],
-            }
-          : c
-      );
+  const handleSendOffers = (openingId: string) =>
+    sendOffers.mutate(openingId, {
+      onSuccess: (r) => say(openingId, r.offered ? `Offers sent to ${r.offered} patient${r.offered > 1 ? 's' : ''}.` : 'No eligible patients on the waitlist right now.'),
+      onError: (e) => say(openingId, errText(e)),
+    });
+
+  const handleReply = (openingId: string, offerId: string, patientId: string, patientName: string) => {
+    const body = (replies[offerId] ?? '').trim();
+    if (!body) return;
+    reply.mutate({ patientId, body }, {
+      onSuccess: (r) => { say(openingId, `${maskName(patientName)} ${OUTCOME_TEXT[r.outcome] ?? r.outcome}.`); setReplies((p) => ({ ...p, [offerId]: '' })); },
+      onError: (e) => say(openingId, errText(e)),
     });
   };
 
-  const handleSendOffers = (openingId: string) => {
-    setOpenings((prev) =>
-      prev.map((op) => {
-        if (op.id !== openingId) return op;
-        const candidates = waitlist.filter((w) => !w.stopped).slice(0, 3);
-        if (!candidates.length) return op;
-
-        const newOffers = candidates.map((c) => {
-          const safeText = `Hi ${c.name.split(' ')[0]}, this is ${practice.name} — an opening just came up today at ${op.time}. Reply YES to book or NO to pass. Reply STOP to opt out.`;
-          deliverConvo(c.name, 'practice', safeText, 'Offer sent');
-          logAudit('DISPATCH_OFFER', `Dispatched HIPAA-sanitized offer to ${c.name} for ${op.time}`);
-          addLog(`Offer sent to ${c.name} via SMS for ${op.time} · ${op.doctor}`);
-
-          return {
-            name: c.name,
-            score: 75,
-            status: 'sent' as const,
-            expiresAt: Date.now() + 15 * 60000,
-            ch: 'SMS' as const,
-          };
-        });
-
-        return { ...op, offers: [...op.offers, ...newOffers] };
-      })
-    );
-  };
-
-  const handleReply = (openingId: string, offerIndex: number) => {
-    const opening = openings.find((o) => o.id === openingId);
-    if (!opening) return;
-    const offer = opening.offers[offerIndex];
-    if (!offer) return;
-
-    const input = (replies[`${openingId}-${offerIndex}`] || 'YES').trim();
-    deliverConvo(offer.name, 'patient', input);
-
-    if (/^(yes|y|sure|book|ok)\b/i.test(input)) {
-      if (opening.filledBy) {
-        deliverConvo(offer.name, 'practice', 'Sorry, that opening was just claimed!');
-      } else {
-        const val = estValue(opening.detail);
-        setOpenings((prev) =>
-          prev.map((op) => {
-            if (op.id !== openingId) return op;
-            return {
-              ...op,
-              filledBy: offer.name,
-              value: val,
-              offers: op.offers.map((o) =>
-                o.name === offer.name ? { ...o, status: 'filled' as const } : { ...o, status: 'withdrawn' as const }
-              ),
-            };
-          })
-        );
-
-        deliverConvo(
-          offer.name,
-          'practice',
-          `You're booked for today at ${opening.time} at ${practice.name}. See you then!`,
-          'Confirmed'
-        );
-
-        setWaitlist((prev) => prev.filter((w) => w.name !== offer.name));
-        addLog(`${offer.name} accepted ${opening.time} — booked`, val);
-        logAudit('SLOT_FILLED', `Opening at ${opening.time} filled by ${offer.name}`);
-      }
-    } else if (/^(no|pass)\b/i.test(input)) {
-      setOpenings((prev) =>
-        prev.map((op) => {
-          if (op.id !== openingId) return op;
-          const updated = [...op.offers];
-          updated[offerIndex] = { ...offer, status: 'declined' as const };
-          return { ...op, offers: updated };
-        })
-      );
-      deliverConvo(offer.name, 'practice', 'No problem — you remain on our waitlist.');
-      addLog(`${offer.name} declined ${opening.time}`);
-    } else if (/^(stop)\b/i.test(input)) {
-      setWaitlist((prev) => prev.map((w) => (w.name === offer.name ? { ...w, stopped: true } : w)));
-      setPatients((prev) => prev.map((p) => (p.name === offer.name ? { ...p, smsConsent: false } : p)));
-      deliverConvo(offer.name, 'practice', 'You have unsubscribed from texts. Reply START to resume.', 'Opted out');
-      addLog(`${offer.name} replied STOP — logged TCPA opt out`);
-      logAudit('TCPA_STOP', `Patient ${offer.name} opted out via STOP`);
-    }
-
-    setReplies((prev) => ({ ...prev, [`${openingId}-${offerIndex}`]: '' }));
-  };
-
-  const recoveredList = openings.filter((o) => o.filledBy);
-
   return (
-    <div className="space-y-7">
-      {/* Head */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-3">
-        <div>
-          <div className="text-[11px] tracking-widest uppercase text-[#a3533a] font-bold">Recovery</div>
-          <h2 className="text-[30px] font-normal tracking-tight text-[#1e2a28] m-0">
-            Keep every chair working
-          </h2>
-          <p className="text-[13px] text-[#1e2a28]/70 mt-1.5 max-w-lg leading-relaxed">
-            The engine ranks your waitlist by treatment fit, provider, and urgency. First YES wins.
-          </p>
+    <div className="space-y-6">
+      <div>
+        <div className="text-[11px] tracking-widest uppercase text-[#a3533a] font-bold">Recovery</div>
+        <h2 className="text-[30px] font-normal tracking-tight text-[#1e2a28] m-0">Keep every chair working</h2>
+        <p className="text-[13px] text-[#1e2a28]/70 mt-1.5 max-w-lg leading-relaxed">
+          The engine ranks your waitlist by treatment fit, provider, and urgency. First YES wins.
+        </p>
+      </div>
+
+      <QueryBoundary queries={[openings, rate, ...(canSeeRevenue ? [revenue] : [])]}>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <MetricCard label="Patients recovered today" value={recoveredToday} sub="Patients who claimed an opening" />
+          <MetricCard label="Seats recovered · 28 days" value={rate.data?.period.filled ?? 0} sub="Open appointments filled" accent />
+          {canSeeRevenue ? (
+            <MetricCard label="Est. revenue recovered · 28 days" value={usdCents(revenue.data?.period.revenueCents ?? 0)} sub="From your own fee schedule" accent />
+          ) : (
+            <MetricCard label="Recovery rate · 28 days" value={`${rate.data?.period.ratePercent ?? 0}%`} sub={`${rate.data?.period.filled ?? 0} of ${rate.data?.period.openings ?? 0} openings filled`} accent />
+          )}
         </div>
-      </div>
 
-      {/* Metric row */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <MetricCard label="Patients recovered today" value={recoveredList.length} sub="Patients who claimed an opening" />
-        <MetricCard label="Seats recovered · month" value={summary.monthFilled} sub="Open appointments filled" accent />
-        {canSeeRevenue ? (
-          <MetricCard label="Est. revenue recovered · month" value={usd(summary.monthRevenue)} sub="Estimated from fee schedule" accent />
-        ) : (
-          <MetricCard label="Recovery rate · month" value={`${summary.monthRate}%`} sub={`${summary.monthFilled} of ${summary.monthOpenings} openings filled`} accent />
-        )}
-      </div>
+        <section className="space-y-3">
+          <div className="text-[11px] tracking-widest uppercase text-[#a3533a] font-bold">Openings</div>
+          <h3 className="text-[20px] font-medium tracking-tight m-0">Cancellations, gaps &amp; no-shows</h3>
 
-      {/* Openings */}
-      <section className="space-y-3">
-        <div className="text-[11px] tracking-widest uppercase text-[#a3533a] font-bold">Openings</div>
-        <h3 className="text-[20px] font-medium tracking-tight m-0">Cancellations, gaps &amp; no-shows</h3>
+          {list.length === 0 && <p className="text-[13px] text-[#1e2a28]/70">No openings today. Mark a no-show on the Today screen and it appears here.</p>}
 
-        <div className="space-y-3 pt-1">
-          {openings.map((r) => {
-            const isFilled = Boolean(r.filledBy);
-            const live = r.offers.filter((o) => o.status === 'sent');
-
-            return (
-              <div key={r.id} className="border border-[#1e2a28]/15 bg-white/40">
-                <div className="p-3.5 px-4 flex items-center justify-between border-b border-[#1e2a28]/10 relative pl-6">
-                  <div className="absolute left-0 top-3 bottom-3 w-1 bg-[#a3533a]" />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-[#1e2a28]/70">
-                        {r.type}
+          <div className="space-y-3 pt-1">
+            {list.map((o) => {
+              const isFilled = o.status === 'filled';
+              const live = o.offers.filter((x) => x.status === 'sent');
+              return (
+                <div key={o.id} className="border border-[#1e2a28]/15 bg-white/40">
+                  <div className="p-3.5 px-4 flex items-center justify-between border-b border-[#1e2a28]/10 relative pl-6">
+                    <div className="absolute left-0 top-3 bottom-3 w-1 bg-[#a3533a]" />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-[#1e2a28]/70">{KIND_LABEL[o.kind]}</span>
+                        <strong className="text-[13px] font-semibold text-[#1e2a28]">{maskTreatment(o.treatment)}</strong>
+                      </div>
+                      <div className="text-[11px] text-[#1e2a28]/70 mt-0.5">{timeOf(o.startsAt)} · {o.providerName}</div>
+                    </div>
+                    <div className="text-right">
+                      {o.patientName && <strong className="text-[12.5px] font-semibold block">{maskName(o.patientName)}</strong>}
+                      <span className="text-[11px] text-[#1e2a28]/70">
+                        {isFilled ? 'Filled' : live.length ? 'Offers out' : canSeeRevenue && o.estValueCents != null ? `Open · ≈ ${usdCents(o.estValueCents)} at stake` : 'Open'}
                       </span>
-                      <strong className="text-[13px] font-semibold text-[#1e2a28]">{maskTreatment(r.detail)}</strong>
                     </div>
-                    <div className="text-[11px] text-[#1e2a28]/70 mt-0.5">{r.time} · {r.doctor}</div>
                   </div>
-                  <div className="text-right">
-                    <strong className="text-[12.5px] font-semibold block">{maskName(r.patient)}</strong>
-                    <span className="text-[11px] text-[#1e2a28]/70">
-                      {isFilled ? 'Filled' : live.length ? 'Offers out' : canSeeRevenue ? `Open · ≈ ${usd(estValue(r.detail))} at stake` : 'Open'}
-                    </span>
-                  </div>
-                </div>
 
-                <div className="p-4 pt-3 text-xs space-y-3">
-                  {isFilled ? (
-                    <div className="p-3 bg-[#a3533a]/10 border-l-2 border-[#a3533a] text-xs">
-                      <strong>{maskName(r.filledBy!)}</strong> booked this slot{canSeeRevenue ? ` · ≈ ${usd(r.value || 0)} est. recovered` : ''}
-                    </div>
-                  ) : (
-                    <>
-                      {r.offers.length > 0 && (
-                        <div className="space-y-2">
-                          <div className="text-[11px] font-bold uppercase text-[#1e2a28]/70">Offers</div>
-                          {r.offers.map((o, idx) => (
-                            <div key={idx} className="p-2 border border-[#1e2a28]/15 bg-white/50 space-y-2">
-                              <div className="flex items-center justify-between">
-                                <span className="font-semibold">{maskName(o.name)}</span>
-                                <span className="text-[11px] uppercase font-bold text-[#1e2a28]/70">{o.status}</span>
-                              </div>
-                              {o.status === 'sent' && (
-                                <div className="flex gap-2">
-                                  <input
-                                    type="text"
-                                    placeholder={`Reply: YES, NO, STOP…`}
-                                    aria-label={`Simulated reply from ${maskName(o.name)}`}
-                                    value={replies[`${r.id}-${idx}`] || ''}
-                                    onChange={(e) =>
-                                      setReplies((p) => ({ ...p, [`${r.id}-${idx}`]: e.target.value }))
-                                    }
-                                    className="flex-1 p-1 bg-transparent border border-[#1e2a28]/20 text-xs"
-                                  />
-                                  <button
-                                    onClick={() => handleReply(r.id, idx)}
-                                    className="px-3 py-1 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold"
-                                  >
-                                    Send reply
-                                  </button>
+                  <div className="p-4 pt-3 text-xs space-y-3">
+                    {isFilled ? (
+                      <div className="p-3 bg-[#a3533a]/10 border-l-2 border-[#a3533a] text-xs">
+                        <strong>{maskName(o.filledByName ?? 'A patient')}</strong> booked this slot{canSeeRevenue && o.valueCents ? ` · ≈ ${usdCents(o.valueCents)} est. recovered` : ''}
+                      </div>
+                    ) : (
+                      <>
+                        {o.offers.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="text-[11px] font-bold uppercase text-[#1e2a28]/70">Offers</div>
+                            {o.offers.map((f) => (
+                              <div key={f.id} className="p-2 border border-[#1e2a28]/15 bg-white/50 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="font-semibold">{maskName(f.patientName)}</span>
+                                  <span className="text-[11px] uppercase font-bold text-[#1e2a28]/70">
+                                    {f.status}{f.status === 'sent' ? ` · expires ${timeOf(f.expiresAt)}` : ''}
+                                  </span>
                                 </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {!live.length && (
-                        <button
-                          onClick={() => handleSendOffers(r.id)}
-                          className="px-3 py-1.5 bg-[#a3533a] text-[#f4f0e8] text-xs font-semibold hover:bg-[#a3533a]/90"
-                        >
-                          Send offers to top waitlist matches
-                        </button>
-                      )}
-                    </>
-                  )}
+                                {import.meta.env.DEV && f.status === 'sent' && (
+                                  <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); handleReply(o.id, f.id, f.patientId, f.patientName); }}>
+                                    <input
+                                      type="text" placeholder="Test reply: YES, NO, STOP…" aria-label={`Test reply from ${maskName(f.patientName)}`}
+                                      value={replies[f.id] ?? ''} onChange={(e) => setReplies((p) => ({ ...p, [f.id]: e.target.value }))}
+                                      className="flex-1 p-1 bg-transparent border border-[#1e2a28]/20 text-xs"
+                                    />
+                                    <button type="submit" disabled={reply.isPending} className="px-3 py-1 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold disabled:opacity-60">Send reply</button>
+                                  </form>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {!live.length && (
+                          <button
+                            onClick={() => handleSendOffers(o.id)} disabled={sendOffers.isPending}
+                            className="px-3 py-1.5 bg-[#a3533a] text-[#f4f0e8] text-xs font-semibold hover:bg-[#a3533a]/90 disabled:opacity-60"
+                          >
+                            Send offers to top waitlist matches
+                          </button>
+                        )}
+                      </>
+                    )}
+                    {notice[o.id] && <div role="status" className="text-[12px] font-semibold text-[#1e2a28]">{notice[o.id]}</div>}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+              );
+            })}
+          </div>
+        </section>
 
-      {/* Engine log */}
-      <section className="space-y-2">
-        <div className="text-[11px] tracking-widest uppercase text-[#a3533a] font-bold">Activity</div>
-        <h3 className="text-[20px] font-medium tracking-tight m-0">Engine log</h3>
-        <div className="border border-[#1e2a28]/15 divide-y divide-[#1e2a28]/10 bg-white/40 text-xs">
-          {engineLogs.map((l, i) => (
-            <div key={i} className="p-2.5 px-4 flex gap-4 text-[12px]">
-              <span className="text-[#1e2a28]/70 w-16 tabular-nums">{l.t}</span>
-              <span className="text-[#1e2a28]">{l.m}{canSeeRevenue && l.value ? ` · ≈ ${usd(l.value)} recovered` : ''}</span>
-            </div>
-          ))}
-        </div>
-      </section>
+        <section className="space-y-2">
+          <div className="text-[11px] tracking-widest uppercase text-[#a3533a] font-bold">Activity</div>
+          <h3 className="text-[20px] font-medium tracking-tight m-0">Today so far</h3>
+          <div className="border border-[#1e2a28]/15 divide-y divide-[#1e2a28]/10 bg-white/40 text-xs">
+            {list.length === 0 && <div className="p-2.5 px-4 text-[12px] text-[#1e2a28]/70">Nothing yet.</div>}
+            {list.map((o) => (
+              <div key={o.id} className="p-2.5 px-4 flex gap-4 text-[12px]">
+                <span className="text-[#1e2a28]/70 w-20 tabular-nums">{timeOf(o.startsAt)}</span>
+                <span>
+                  {KIND_LABEL[o.kind]}{o.patientName ? `: ${maskName(o.patientName)}` : ''}
+                  {o.filledByName ? ` → ${maskName(o.filledByName)} booked the slot${canSeeRevenue && o.valueCents ? ` · ≈ ${usdCents(o.valueCents)} recovered` : ''}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      </QueryBoundary>
     </div>
   );
 };

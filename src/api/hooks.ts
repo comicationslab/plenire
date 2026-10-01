@@ -1,0 +1,74 @@
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api } from './client';
+import * as S from './schemas';
+
+/** Every screen reads and writes through these hooks. Data comes from the server; nothing is kept in browser state. */
+const SECOND = 1000;
+
+/** Query definitions are exported so tests (and future prefetching) use exactly what the screens use. */
+export const meQuery = queryOptions({ queryKey: ['me'], queryFn: () => api('GET', '/api/me', S.meSchema), staleTime: 5 * 60 * SECOND });
+export const providersQuery = queryOptions({ queryKey: ['providers'], queryFn: () => api('GET', '/api/providers', S.providersSchema), staleTime: 5 * 60 * SECOND });
+export const appointmentsQuery = queryOptions({ queryKey: ['appointments'], queryFn: () => api('GET', '/api/appointments', S.appointmentsSchema), refetchInterval: 30 * SECOND });
+export const openingsQuery = queryOptions({ queryKey: ['openings'], queryFn: () => api('GET', '/api/openings', S.openingsSchema), refetchInterval: 10 * SECOND });
+export const patientsQuery = queryOptions({ queryKey: ['patients'], queryFn: () => api('GET', '/api/patients', S.patientsSchema) });
+export const patientSummaryQuery = queryOptions({ queryKey: ['patients', 'summary'], queryFn: () => api('GET', '/api/patients/summary', S.patientSummarySchema) });
+export const waitlistQuery = queryOptions({ queryKey: ['waitlist'], queryFn: () => api('GET', '/api/waitlist', S.waitlistSchema) });
+export const conversationsQuery = queryOptions({ queryKey: ['conversations'], queryFn: () => api('GET', '/api/conversations', S.conversationsSchema), refetchInterval: 15 * SECOND });
+export const messagesQuery = (patientId: string) =>
+  queryOptions({ queryKey: ['messages', patientId], queryFn: () => api('GET', `/api/messages?patientId=${patientId}`, S.messagesSchema), refetchInterval: 15 * SECOND });
+export const recoveryRateQuery = queryOptions({ queryKey: ['metrics', 'recovery'], queryFn: () => api('GET', '/api/metrics/recovery', S.recoveryRateSchema), refetchInterval: 30 * SECOND });
+export const revenueQuery = queryOptions({ queryKey: ['metrics', 'revenue'], queryFn: () => api('GET', '/api/metrics/revenue', S.revenueSchema), refetchInterval: 30 * SECOND });
+export const auditQuery = queryOptions({ queryKey: ['audit'], queryFn: () => api('GET', '/api/audit', S.auditSchema) });
+export const auditVerifyQuery = queryOptions({ queryKey: ['audit', 'verify'], queryFn: () => api('GET', '/api/audit/verify', S.auditVerifySchema) });
+
+export const useMe = () => useQuery(meQuery);
+export const useProviders = () => useQuery(providersQuery);
+export const useAppointments = () => useQuery(appointmentsQuery);
+export const useOpenings = () => useQuery(openingsQuery);
+export const usePatients = () => useQuery(patientsQuery);
+export const usePatientSummary = () => useQuery(patientSummaryQuery);
+export const useWaitlist = () => useQuery(waitlistQuery);
+export const useConversations = () => useQuery(conversationsQuery);
+export const useMessages = (patientId: string | undefined) => useQuery({ ...messagesQuery(patientId ?? ''), enabled: Boolean(patientId) });
+export const useRecoveryRate = () => useQuery(recoveryRateQuery);
+/** Owner only. For other roles the server answers 403, so we never even ask. */
+export const useRevenue = (enabled: boolean) => useQuery({ ...revenueQuery, enabled });
+export const useAudit = (enabled: boolean) => useQuery({ ...auditQuery, enabled });
+export const useAuditVerify = (enabled: boolean) => useQuery({ ...auditVerifyQuery, enabled });
+
+/** After any change, refresh everything: the data set is small and correctness beats cleverness here. */
+function useWrite<V, R>(fn: (v: V) => Promise<R>) {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: fn, onSuccess: () => qc.invalidateQueries() });
+}
+
+export const useSetAppointmentStatus = () =>
+  useWrite((v: { id: string; status: 'scheduled' | 'arrived' | 'completed' | 'noshow' }) =>
+    api('PATCH', `/api/appointments/${v.id}/status`, S.statusChangeSchema, { status: v.status }));
+export const useSetFollowUp = () =>
+  useWrite((v: { id: string; followUp: string | null }) => api('PATCH', `/api/appointments/${v.id}/follow-up`, S.okSchema, { followUp: v.followUp }));
+export const useSendOffers = () =>
+  useWrite((openingId: string) => api('POST', `/api/openings/${openingId}/offers`, S.sendOffersSchema, { limit: 3, ttlMinutes: 15 }));
+export const useSimulateReply = () =>
+  useWrite((v: { patientId: string; body: string }) => api('POST', `/api/patients/${v.patientId}/simulate-reply`, S.replySchema, { body: v.body }));
+export const useSendMessage = () =>
+  useWrite((v: { patientId: string; body: string }) => api('POST', `/api/patients/${v.patientId}/messages`, S.okSchema, { body: v.body }));
+export const useMarkRead = () => useWrite((patientId: string) => api('POST', `/api/patients/${patientId}/messages/read`, S.okSchema, {}));
+
+export interface WalkIn { name: string; phone: string | null; email: string | null; smsConsent: boolean; providerId: string; startsAt: string; durationMin: number; treatment: string }
+export const useAddWalkIn = () =>
+  useWrite(async (w: WalkIn) => {
+    const { patientId } = await api('POST', '/api/patients', S.idSchema, { name: w.name, phone: w.phone, email: w.email, smsConsent: w.smsConsent, walkIn: true });
+    const { appointmentId } = await api('POST', '/api/appointments', S.idSchema, { patientId, providerId: w.providerId, startsAt: w.startsAt, durationMin: w.durationMin, treatment: w.treatment, walkIn: true });
+    await api('PATCH', `/api/appointments/${appointmentId}/status`, S.statusChangeSchema, { status: 'arrived' });
+    return { patientId, appointmentId };
+  });
+
+export interface BookingInput {
+  firstName: string; lastName: string; phone: string; email: string | null; newPatient: boolean; smsConsent: boolean; notes: string | null;
+  date: string; time: string; durationMin: number; treatment: string; providerId: string | null;
+}
+export const useBook = () => useWrite((b: BookingInput) => api('POST', '/api/bookings', S.bookingResultSchema, b));
+
+/** Fire-and-forget: workstation events (lock, unlock, shield) join the same tamper-evident log. */
+export const reportWorkstationEvent = (action: string) => api('POST', '/api/audit/events', S.okSchema, { action }).catch(() => {});
