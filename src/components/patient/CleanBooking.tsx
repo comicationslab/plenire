@@ -4,7 +4,20 @@ import { ApiError } from '../../api/client';
 import { useBook } from '../../api/hooks';
 import { usePractice } from '../../context/PracticeContext';
 import { toE164 } from '../../lib/format';
-import { TCPA_CONSENT_STATEMENT } from '../../services/hipaaCompliance';
+import { Search } from 'lucide-react';
+import { searchInsurancePlans } from '../../config/insurance';
+import { BOOKING_CONSENT_STATEMENT } from '../../services/hipaaCompliance';
+
+// TODO: point these at the practice's real Terms and Privacy Policy pages.
+const TERMS_URL = '/terms';
+const PRIVACY_URL = '/privacy';
+
+/** Visit → Insurance → Time → Details → Review, then the confirmation screen. */
+const STEPS = ['', 'Visit', 'Insurance', 'Time', 'Details', 'Review'];
+const TOTAL = STEPS.length - 1;
+const DONE = TOTAL + 1;
+
+type Insurance = { kind: 'plan'; name: string } | { kind: 'self' };
 
 /** Staff-assisted booking. The patient-facing public page (with live availability) is a later phase. */
 export const CleanBooking: React.FC = () => {
@@ -26,12 +39,19 @@ export const CleanBooking: React.FC = () => {
   const [email, setEmail] = useState('');
   const [newPatient, setNewPatient] = useState(true);
   const [notes, setNotes] = useState('');
-  const [consent, setConsent] = useState(false);
+  const [insurance, setInsurance] = useState<Insurance | null>(null);
+  const [insQuery, setInsQuery] = useState('');
   const [bookingRef, setBookingRef] = useState('');
   const [bookedWith, setBookedWith] = useState('');
 
   const [notifEmail, setNotifEmail] = useState(false);
   const [notifSms, setNotifSms] = useState(false);
+
+  const insMatches = searchInsurancePlans(insQuery);
+  const typedPlan = insQuery.trim();
+  const canUseTyped = typedPlan.length > 0 && !insMatches.some((m) => m.toLowerCase() === typedPlan.toLowerCase());
+  const pickPlan = (name: string) => { setInsurance({ kind: 'plan', name }); setInsQuery(''); };
+  const insuranceLabel = insurance ? (insurance.kind === 'self' ? 'No insurance (self-pay)' : insurance.name) : '';
 
   // Generate 21 days
   const days = Array.from({ length: 21 }, (_, i) => {
@@ -64,7 +84,7 @@ export const CleanBooking: React.FC = () => {
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 
   const handleContinue = () => {
-    if (step < 4) {
+    if (step < TOTAL) {
       setStep((s) => s + 1);
       window.scrollTo(0, 0);
     } else {
@@ -72,17 +92,18 @@ export const CleanBooking: React.FC = () => {
       book.mutate(
         {
           firstName: firstName.trim(), lastName: lastName.trim(), phone: toE164(phone), email: email.trim() || null,
-          newPatient, smsConsent: consent, notes: notes.trim() || null, date: date!, time: time!,
+          newPatient, smsConsent: true, notes: notes.trim() || null, date: date!, time: time!,
           durationMin: visitType.duration, treatment: visitType.name, providerId: provider === 'any' ? null : provider,
+          insurancePlan: insurance?.kind === 'plan' ? insurance.name : null, selfPay: insurance?.kind === 'self',
         },
         {
           onSuccess: (r) => {
             setBookingRef(r.reference);
             setBookedWith(r.providerName);
-            setStep(5);
+            setStep(DONE);
             window.scrollTo(0, 0);
             setTimeout(() => setNotifEmail(true), 900);
-            if (consent) setTimeout(() => setNotifSms(true), 1500);
+            setTimeout(() => setNotifSms(true), 1500);
           },
           onError: (e) => setBookError(e instanceof ApiError ? (e.code === 'SLOT_TAKEN' ? 'That time was just taken. Please choose another time.' : e.message) : 'Could not book. Try again.'),
         },
@@ -92,8 +113,9 @@ export const CleanBooking: React.FC = () => {
 
   const ctaDisabled = () => {
     if (step === 1) return !visitType;
-    if (step === 2) return !(date && time);
-    if (step === 3) return !isValidForm;
+    if (step === 2) return !insurance;
+    if (step === 3) return !(date && time);
+    if (step === 4) return !isValidForm;
     return book.isPending;
   };
 
@@ -123,7 +145,7 @@ export const CleanBooking: React.FC = () => {
         </div>
 
         {/* Progress */}
-        {step < 5 && (
+        {step < DONE && (
           <div className="p-3 px-5 pb-0 bg-[#f4f0e8]">
             {step > 1 && (
               <button
@@ -136,12 +158,12 @@ export const CleanBooking: React.FC = () => {
             <div className="h-[3px] bg-[#1e2a28]/12 w-full">
               <div
                 className="h-full bg-[#1e2a28] transition-all"
-                style={{ width: `${(step / 4) * 100}%` }}
+                style={{ width: `${(step / TOTAL) * 100}%` }}
               />
             </div>
             <div className="flex justify-between text-[11px] text-[#a3533a] my-2 uppercase font-bold tracking-widest">
-              <span>Step {step} of 4</span>
-              <span>{['', 'Visit', 'Time', 'Details', 'Review'][step]}</span>
+              <span>Step {step} of {TOTAL}</span>
+              <span>{STEPS[step]}</span>
             </div>
           </div>
         )}
@@ -229,8 +251,71 @@ export const CleanBooking: React.FC = () => {
             </div>
           )}
 
-          {/* Step 2 */}
+          {/* Step 2: Insurance */}
           {step === 2 && (
+            <div className="space-y-4">
+              <h1 className="text-[23px] font-medium tracking-tight m-0">Select your insurance</h1>
+              <p className="text-[13px] text-[#1e2a28]/70 m-0">Search for your dental plan so the office can check coverage before your visit.</p>
+
+              {insurance?.kind === 'plan' && (
+                <div className="p-3 border border-[#1e2a28] bg-[#1e2a28] text-[#f4f0e8] flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[11px] uppercase font-bold tracking-widest text-[#f4f0e8]/75">Selected plan</div>
+                    <div className="font-semibold text-[14px] truncate">{insurance.name}</div>
+                  </div>
+                  <button type="button" onClick={() => setInsurance(null)} className="text-[12px] underline font-semibold shrink-0">Change</button>
+                </div>
+              )}
+
+              {insurance?.kind !== 'plan' && (
+                <div className="space-y-2">
+                  <label htmlFor="insurance-search" className="block text-[12px] font-semibold">Insurance plan</label>
+                  <div className="relative">
+                    <Search size={16} aria-hidden className="absolute left-3 top-1/2 -translate-y-1/2 text-[#1e2a28]/50" />
+                    <input
+                      id="insurance-search"
+                      type="search"
+                      autoComplete="off"
+                      value={insQuery}
+                      onChange={(e) => setInsQuery(e.target.value)}
+                      placeholder="Search for an insurance plan"
+                      className="w-full py-3 pl-9 pr-3 bg-transparent border border-[#1e2a28]/18 text-sm focus:outline-none focus:border-[#1e2a28]"
+                    />
+                  </div>
+                  <ul role="listbox" aria-label="Insurance plans" className="border border-[#1e2a28]/16 max-h-[280px] overflow-y-auto divide-y divide-[#1e2a28]/10 m-0 p-0 list-none">
+                    {insMatches.map((name) => (
+                      <li key={name} role="option" aria-selected={false}>
+                        <button type="button" onClick={() => pickPlan(name)} className="w-full text-left px-3 py-2.5 text-[13.5px] hover:bg-[#1e2a28]/[0.06]">
+                          {name}
+                        </button>
+                      </li>
+                    ))}
+                    {canUseTyped && (
+                      <li role="option" aria-selected={false}>
+                        <button type="button" onClick={() => pickPlan(typedPlan)} className="w-full text-left px-3 py-2.5 text-[13.5px] hover:bg-[#1e2a28]/[0.06]">
+                          {insMatches.length === 0 ? "Can't find your plan? " : 'Not listed? '}
+                          <span className="font-semibold">Use &ldquo;{typedPlan}&rdquo;</span>
+                        </button>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
+              <div className="text-center pt-1">
+                <button
+                  type="button"
+                  onClick={() => { setInsurance({ kind: 'self' }); setInsQuery(''); setStep(3); window.scrollTo(0, 0); }}
+                  className="text-[14px] underline text-[#1e2a28]/70 hover:text-[#1e2a28]"
+                >
+                  I don&apos;t have insurance
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Time */}
+          {step === 3 && (
             <div className="space-y-4">
               <h1 className="text-[23px] font-medium tracking-tight m-0">Choose a time</h1>
               <p className="text-[13px] text-[#1e2a28]/70 m-0">{visitType?.name}</p>
@@ -284,8 +369,8 @@ export const CleanBooking: React.FC = () => {
             </div>
           )}
 
-          {/* Step 3 */}
-          {step === 3 && (
+          {/* Step 4: Details */}
+          {step === 4 && (
             <div className="space-y-3.5">
               <h1 className="text-[23px] font-medium tracking-tight m-0">Your details</h1>
               <p className="text-[13px] text-[#1e2a28]/70 m-0">We&apos;ll send your confirmation to the contact info below.</p>
@@ -376,25 +461,11 @@ export const CleanBooking: React.FC = () => {
                   className="w-full p-2.5 bg-transparent border border-[#1e2a28]/18 text-sm min-h-[64px] focus:outline-none focus:border-[#1e2a28]"
                 />
               </div>
-
-              {/* Consent */}
-              <div className="p-3 bg-[#1e2a28]/[0.04] border border-[#1e2a28]/12 flex items-start gap-2.5">
-                <input
-                  type="checkbox"
-                  checked={consent}
-                  onChange={(e) => setConsent(e.target.checked)}
-                  className="mt-1 accent-[#1e2a28]"
-                />
-                <p className="text-[12px] text-[#1e2a28]/70 m-0 leading-relaxed">
-                  {TCPA_CONSENT_STATEMENT(practice.name)}
-                </p>
-              </div>
-              <p className="text-[11px] text-[#1e2a28]/70 m-0">Optional. We&apos;ll always email your confirmation.</p>
             </div>
           )}
 
-          {/* Step 4 */}
-          {step === 4 && (
+          {/* Step 5: Review */}
+          {step === 5 && (
             <div className="space-y-4">
               <h1 className="text-[23px] font-medium tracking-tight m-0">Review your booking</h1>
               <p className="text-[13px] text-[#1e2a28]/70 m-0">Double check the details below, then confirm.</p>
@@ -416,8 +487,19 @@ export const CleanBooking: React.FC = () => {
 
               <div className="border border-[#1e2a28]/16 p-4 space-y-2 text-xs">
                 <div className="flex justify-between items-center text-[11px] font-bold uppercase tracking-widest text-[#1e2a28]/70">
-                  <span>Time</span>
+                  <span>Insurance</span>
                   <button onClick={() => setStep(2)} className="text-[#a3533a]">Edit</button>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#1e2a28]/70">Plan</span>
+                  <strong className="font-semibold text-right">{insuranceLabel}</strong>
+                </div>
+              </div>
+
+              <div className="border border-[#1e2a28]/16 p-4 space-y-2 text-xs">
+                <div className="flex justify-between items-center text-[11px] font-bold uppercase tracking-widest text-[#1e2a28]/70">
+                  <span>Time</span>
+                  <button onClick={() => setStep(3)} className="text-[#a3533a]">Edit</button>
                 </div>
                 <div className="flex justify-between border-b border-[#1e2a28]/12 pb-2">
                   <span className="text-[#1e2a28]/70">Date</span>
@@ -432,7 +514,7 @@ export const CleanBooking: React.FC = () => {
               <div className="border border-[#1e2a28]/16 p-4 space-y-2 text-xs">
                 <div className="flex justify-between items-center text-[11px] font-bold uppercase tracking-widest text-[#1e2a28]/70">
                   <span>Contact</span>
-                  <button onClick={() => setStep(3)} className="text-[#a3533a]">Edit</button>
+                  <button onClick={() => setStep(4)} className="text-[#a3533a]">Edit</button>
                 </div>
                 <div className="flex justify-between border-b border-[#1e2a28]/12 pb-2">
                   <span className="text-[#1e2a28]/70">Name</span>
@@ -442,20 +524,16 @@ export const CleanBooking: React.FC = () => {
                   <span className="text-[#1e2a28]/70">Phone</span>
                   <strong className="font-semibold tabular-nums">{phone}</strong>
                 </div>
-                <div className="flex justify-between border-b border-[#1e2a28]/12 pb-2">
+                <div className="flex justify-between">
                   <span className="text-[#1e2a28]/70">Email</span>
                   <strong className="font-semibold">{email}</strong>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#1e2a28]/70">Text reminders</span>
-                  <strong className="font-semibold">{consent ? 'Yes' : 'No (email only)'}</strong>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Step 5: Confirmation */}
-          {step === 5 && (
+          {/* Step 6: Confirmation */}
+          {step === DONE && (
             <div className="space-y-5 text-center pt-2">
               <div className="w-[60px] h-[60px] rounded-full border-[1.5px] border-[#1e2a28] flex items-center justify-center mx-auto text-[28px]">
                 ✓
@@ -485,12 +563,10 @@ export const CleanBooking: React.FC = () => {
                   <span>Email</span>
                   <span className="text-emerald-800 font-semibold">{notifEmail ? 'Sent ✓' : 'Sending…'}</span>
                 </div>
-                {consent && (
-                  <div className="border border-[#1e2a28]/16 p-3 flex items-center justify-between text-xs">
-                    <span>Text message</span>
-                    <span className="text-emerald-800 font-semibold">{notifSms ? 'Sent ✓' : 'Sending…'}</span>
-                  </div>
-                )}
+                <div className="border border-[#1e2a28]/16 p-3 flex items-center justify-between text-xs">
+                  <span>Text message</span>
+                  <span className="text-emerald-800 font-semibold">{notifSms ? 'Sent ✓' : 'Sending…'}</span>
+                </div>
               </div>
 
               <div className="pt-2">
@@ -506,14 +582,22 @@ export const CleanBooking: React.FC = () => {
         </div>
 
         {/* Sticky CTA bar for steps 1-4 */}
-        {step < 5 && (
+        {step < DONE && (
           <div className="p-4 px-5 border-t border-[#1e2a28]/14 bg-[#f4f0e8] sticky bottom-0">
+            {step === TOTAL && (
+              <p className="text-[11.5px] text-[#1e2a28]/70 m-0 mb-3 leading-relaxed">
+                By clicking &ldquo;Book appointment,&rdquo; I agree to the{' '}
+                <a href={TERMS_URL} target="_blank" rel="noreferrer" className="underline text-[#a3533a]">Terms</a> and{' '}
+                <a href={PRIVACY_URL} target="_blank" rel="noreferrer" className="underline text-[#a3533a]">Privacy Policy</a>.{' '}
+                {BOOKING_CONSENT_STATEMENT(practice.name)}
+              </p>
+            )}
             <button
               onClick={handleContinue}
               disabled={ctaDisabled()}
               className="w-full py-3.5 bg-[#1e2a28] text-[#f4f0e8] text-[15px] font-bold disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             >
-              {step === 4 ? 'Confirm booking' : 'Continue ›'}
+              {step === TOTAL ? (book.isPending ? 'Booking…' : 'Book appointment') : 'Continue ›'}
             </button>
           </div>
         )}

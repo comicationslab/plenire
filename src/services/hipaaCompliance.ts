@@ -24,5 +24,9 @@ export function maskTreatment(treatment: string, shield: boolean): string {
   return shield ? 'Reserved visit' : treatment;
 }
 
-export const TCPA_CONSENT_STATEMENT = (practiceName: string) =>
-  `Yes, text me appointment confirmations, reminders, and earlier-opening offers from ${practiceName} at the mobile number above. Up to 6 messages per appointment. Message and data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of booking.`;
+/**
+ * Booking-page consent. There is no checkbox: pressing "Book appointment" is the consent, so this text must sit right above that button.
+ * The page renders "By clicking “Book appointment,” I agree to the Terms and Privacy Policy." (with links) and then this.
+ */
+export const BOOKING_CONSENT_STATEMENT = (practiceName: string) =>
+  `I consent to receive automated appointment confirmations, reminders, and earlier-opening offers by text message from ${practiceName} at the mobile number I provided. Consent is not a condition of purchase. Message and data rates may apply. Message frequency varies. Reply HELP for help or STOP to end all messages.`;

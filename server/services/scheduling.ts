@@ -42,6 +42,8 @@ export interface NewAppointment {
   durationMin: number;
   treatment: string;
   walkIn?: boolean;
+  insurancePlan?: string | null;
+  selfPay?: boolean;
 }
 
 export async function createAppointment(q: Queryable, ctx: Ctx, a: NewAppointment): Promise<string> {
@@ -51,9 +53,9 @@ export async function createAppointment(q: Queryable, ctx: Ctx, a: NewAppointmen
   if (!pt) throw new AppError(404, 'PATIENT_NOT_FOUND');
   await assertFree(q, a.providerId, a.startsAt, a.durationMin);
   const [row] = await q.query<{ id: string }>(
-    `INSERT INTO appointments (practice_id, patient_id, provider_id, starts_at, duration_min, treatment, walk_in)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [ctx.practiceId, a.patientId, a.providerId, a.startsAt, a.durationMin, a.treatment, a.walkIn ?? false],
+    `INSERT INTO appointments (practice_id, patient_id, provider_id, starts_at, duration_min, treatment, walk_in, insurance_plan, self_pay)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+    [ctx.practiceId, a.patientId, a.providerId, a.startsAt, a.durationMin, a.treatment, a.walkIn ?? false, a.selfPay ? null : (a.insurancePlan ?? null), a.selfPay ?? false],
   );
   await audit(q, ctx, a.walkIn ? 'WALKIN_ADDED' : 'APPT_CREATED', { appointmentId: row.id });
   return row.id;
@@ -74,6 +76,10 @@ export interface Booking {
   treatment: string;
   /** null = any available provider */
   providerId: string | null;
+  /** Plan name picked (or typed) on the booking page. Ignored when selfPay is true. */
+  insurancePlan?: string | null;
+  /** "I don't have insurance" */
+  selfPay?: boolean;
 }
 
 /** One transaction: find-or-create the patient, pick a free provider, book, audit. */
@@ -100,7 +106,7 @@ export async function bookAppointment(q: Queryable, ctx: Ctx, b: Booking) {
   const patientId = existing?.id ?? (await createPatient(q, ctx, { name, phone: b.phone, email: b.email, smsConsent: b.smsConsent, newPatient: b.newPatient, notes: b.notes }));
   if (existing && b.smsConsent) await q.query('UPDATE patients SET sms_consent = true, sms_consent_at = COALESCE(sms_consent_at, now()), sms_opt_out_at = NULL WHERE id = $1 AND sms_opt_out_at IS NULL', [patientId]);
 
-  const appointmentId = await createAppointment(q, ctx, { patientId, providerId, startsAt: starts_at, durationMin: b.durationMin, treatment: b.treatment });
+  const appointmentId = await createAppointment(q, ctx, { patientId, providerId, startsAt: starts_at, durationMin: b.durationMin, treatment: b.treatment, insurancePlan: b.insurancePlan, selfPay: b.selfPay });
   await audit(q, ctx, 'PATIENT_BOOKED', { appointmentId });
   const [prov] = await q.query<{ name: string }>('SELECT name FROM providers WHERE id = $1', [providerId]);
   return { appointmentId, patientId, providerName: prov.name, reference: 'PL-' + appointmentId.replace(/-/g, '').slice(0, 8).toUpperCase() };

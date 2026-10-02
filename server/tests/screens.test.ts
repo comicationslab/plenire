@@ -101,6 +101,20 @@ describe(`endpoints behind the screens (${backend()})`, () => {
     assert.equal(patients[0].smsConsent, true);
   });
 
+  it('booking: saves the chosen insurance plan or self-pay on the appointment', async () => {
+    const base = { firstName: 'Ines', lastName: 'Park', phone: '+15555550777', newPatient: true, smsConsent: true, date: tomorrow(), durationMin: 30, treatment: 'Cleaning & Checkup', providerId: null };
+    const insured = await call('POST', '/api/bookings', fd, { ...base, time: '09:00', insurancePlan: 'Delta Dental PPO' });
+    const selfPay = await call('POST', '/api/bookings', fd, { ...base, firstName: 'Sol', time: '10:00', selfPay: true, insurancePlan: 'ignored when self-pay' });
+    const skipped = await call('POST', '/api/bookings', fd, { ...base, firstName: 'Max', time: '11:00' });
+    assert.deepEqual([insured.status, selfPay.status, skipped.status], [201, 201, 201]);
+    const rows = await db.admin((q) => q.query<any>('SELECT id, insurance_plan, self_pay FROM appointments WHERE id = ANY($1::uuid[])', [[insured.json.appointmentId, selfPay.json.appointmentId, skipped.json.appointmentId]]));
+    const by = (id: string) => rows.find((r: any) => r.id === id);
+    assert.deepEqual([by(insured.json.appointmentId).insurance_plan, by(insured.json.appointmentId).self_pay], ['Delta Dental PPO', false]);
+    assert.deepEqual([by(selfPay.json.appointmentId).insurance_plan, by(selfPay.json.appointmentId).self_pay], [null, true]);
+    assert.deepEqual([by(skipped.json.appointmentId).insurance_plan, by(skipped.json.appointmentId).self_pay], [null, false]);
+    assert.equal((await call('POST', '/api/bookings', fd, { ...base, time: '11:30', insurancePlan: 'x'.repeat(121) })).status, 422, 'plan name is length-limited');
+  });
+
   it('booking cannot use another practice\'s provider', async () => {
     const bProvider = (await call('GET', '/api/providers', bOwner)).json[0].id;
     const r = await call('POST', '/api/bookings', fd, { firstName: 'A', lastName: 'B', phone: '+15555550111', newPatient: false, smsConsent: false, date: tomorrow(), time: '09:00', durationMin: 30, treatment: 'x', providerId: bProvider });

@@ -230,6 +230,7 @@ export function createApp(deps: AppDeps) {
       email: z.string().email().max(200).nullish(), newPatient: z.boolean(), smsConsent: z.boolean(), notes: z.string().max(500).nullish(),
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), time: z.string().regex(/^\d{2}:\d{2}$/),
       durationMin: z.number().int().min(5).max(480), treatment: z.string().trim().min(1).max(120), providerId: uuid.nullable(),
+      insurancePlan: z.string().trim().min(1).max(120).nullish(), selfPay: z.boolean().optional(),
     }), await c.req.json());
     return c.json(await run(c, (q, ctx) => bookAppointment(q, ctx, b)), 201);
   });

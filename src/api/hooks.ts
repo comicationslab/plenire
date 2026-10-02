@@ -75,6 +75,7 @@ export const useAddWalkIn = () =>
 export interface BookingInput {
   firstName: string; lastName: string; phone: string; email: string | null; newPatient: boolean; smsConsent: boolean; notes: string | null;
   date: string; time: string; durationMin: number; treatment: string; providerId: string | null;
+  insurancePlan?: string | null; selfPay?: boolean;
 }
 export const useBook = () => useWrite((b: BookingInput) => api('POST', '/api/bookings', S.bookingResultSchema, b));
 
