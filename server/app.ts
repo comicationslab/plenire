@@ -5,8 +5,13 @@ import { createMiddleware } from 'hono/factory';
 import { secureHeaders } from 'hono/secure-headers';
 import { z, ZodError } from 'zod';
 import type { Config } from './config';
+import { authenticate, practiceUsersOnly, type Env } from './middleware/auth';
+import { adminRoutes } from './routes/admin';
+import { authRoutes } from './routes/auth';
+import { teamRoutes } from './routes/team';
+import { consoleEmail, type EmailProvider } from './services/email';
 import type { Db } from './db/adapter';
-import type { DevAuth, Role, Verifier } from './auth/tokens';
+import type { LocalTokens, Role, Verifier } from './auth/tokens';
 import { AppError } from './services/errors';
 import { audit, type Ctx } from './services/audit';
 import { dispatchOutbox, queueMessage, type MessageProvider } from './services/messaging';
@@ -14,14 +19,17 @@ import { acceptOffer, handleReply, sendOffers, setAppointmentStatus } from './se
 import { bookAppointment, createAppointment, createPatient } from './services/scheduling';
 import { recoveryRate, revenueRecovered } from './services/metrics';
 
-type Env = { Variables: { ctx: Ctx; role: Role } };
+export type AppConfig = Pick<Config, 'CORS_ORIGINS' | 'ENABLE_SIMULATOR'> &
+  Partial<Pick<Config, 'APP_URL' | 'EXPOSE_INVITE_LINKS' | 'TRUST_PROXY' | 'ACCESS_TOKEN_TTL_SECONDS' | 'AUTH_RATE_LIMIT_PER_MINUTE' | 'SESSION_HOURS' | 'SESSION_IDLE_MINUTES' | 'NODE_ENV'>>;
 
 export interface AppDeps {
   db: Db;
-  config: Pick<Config, 'CORS_ORIGINS' | 'ENABLE_SIMULATOR'>;
+  config: AppConfig;
   verifier: Verifier;
-  dev?: DevAuth;
+  /** Present in local sign-in mode (Plenire issues the tokens). Absent when Amazon Cognito issues them. */
+  tokens?: LocalTokens;
   provider: MessageProvider;
+  email?: EmailProvider;
 }
 
 const uuid = z.string().uuid();
@@ -35,6 +43,12 @@ const CLIENT_AUDIT_ACTIONS = ['WORKSTATION_LOCK', 'WORKSTATION_AUTO_LOCK', 'WORK
 
 export function createApp(deps: AppDeps) {
   const { db, verifier, provider } = deps;
+  const cfg = {
+    APP_URL: 'http://localhost:3000', EXPOSE_INVITE_LINKS: 'true' as const, TRUST_PROXY: 'false' as const,
+    ACCESS_TOKEN_TTL_SECONDS: 600, AUTH_RATE_LIMIT_PER_MINUTE: 10, SESSION_HOURS: 12, SESSION_IDLE_MINUTES: 30, NODE_ENV: 'test' as const, ...deps.config,
+  };
+  const email = deps.email ?? consoleEmail;
+  const expose = cfg.EXPOSE_INVITE_LINKS === 'true';
   const app = new Hono<Env>();
 
   app.use('*', secureHeaders());
@@ -52,32 +66,10 @@ export function createApp(deps: AppDeps) {
 
   app.get('/health', (c) => c.json({ ok: true }));
 
-  // ── local-development login (not mounted when real auth is on) ──
-  if (deps.dev) {
-    const dev = deps.dev;
-    app.post('/auth/dev-login', async (c) => {
-      const { email } = parse(z.object({ email: z.string().email() }), await c.req.json());
-      const [u] = await db.admin((q) => q.query<{ id: string; practice_id: string; role: Role; name: string }>('SELECT id, practice_id, role, name FROM staff WHERE email = $1 AND active', [email]));
-      if (!u) throw new AppError(401, 'UNKNOWN_USER');
-      const token = await dev.issue({ staffId: u.id, practiceId: u.practice_id, role: u.role });
-      return c.json({ token, user: { id: u.id, name: u.name, role: u.role, practiceId: u.practice_id } });
-    });
-  }
+  // ── public sign-in routes (local mode only; with Cognito, Cognito hosts sign-in) ──
+  if (deps.tokens) app.route('/auth', authRoutes({ db, tokens: deps.tokens, email, cfg: { ...cfg, production: cfg.NODE_ENV === 'production' } }));
+  app.route('/api/platform', adminRoutes({ db, verifier, email, appUrl: cfg.APP_URL, exposeLinks: expose }));
 
-  // ── everything under /api needs a valid token ──
-  const authenticate = createMiddleware<Env>(async (c, next) => {
-    const h = c.req.header('authorization');
-    if (!h?.startsWith('Bearer ')) throw new AppError(401, 'UNAUTHENTICATED');
-    let claims;
-    try {
-      claims = await verifier.verify(h.slice(7));
-    } catch {
-      throw new AppError(401, 'INVALID_TOKEN');
-    }
-    c.set('ctx', { practiceId: claims.practiceId, actorId: claims.staffId, role: claims.role });
-    c.set('role', claims.role);
-    await next();
-  });
   const requireRole = (...roles: Role[]) =>
     createMiddleware<Env>(async (c, next) => {
       if (!roles.includes(c.get('role'))) throw new AppError(403, 'FORBIDDEN', 'Your role cannot do this');
@@ -85,7 +77,7 @@ export function createApp(deps: AppDeps) {
     });
 
   const api = new Hono<Env>();
-  api.use('*', authenticate);
+  api.use('*', authenticate(verifier), practiceUsersOnly);
   const run = <T>(c: { get: (k: 'ctx') => Ctx }, fn: (q: Parameters<Parameters<Db['tenant']>[1]>[0], ctx: Ctx) => Promise<T>) =>
     db.tenant(c.get('ctx').practiceId, (q) => fn(q, c.get('ctx')));
   const flush = (c: { get: (k: 'ctx') => Ctx }) => dispatchOutbox(db, c.get('ctx').practiceId, provider).catch(() => {});
@@ -99,7 +91,7 @@ export function createApp(deps: AppDeps) {
   );
 
   api.get('/providers', async (c) =>
-    c.json(await run(c, (q) => q.query('SELECT id, name, initials, chair, title FROM providers ORDER BY chair NULLS LAST, name'))));
+    c.json(await run(c, (q) => q.query('SELECT id, name, initials, chair, title FROM providers WHERE active ORDER BY chair NULLS LAST, name'))));
 
   api.get('/appointments', async (c) => {
     const date = c.req.query('date');
@@ -298,6 +290,8 @@ export function createApp(deps: AppDeps) {
       const [r] = await q.query<{ broken: string | null }>('SELECT audit_verify($1) AS broken', [ctx.practiceId]);
       return { intact: r.broken === null, firstBrokenSeq: r.broken === null ? null : Number(r.broken) };
     })));
+
+  api.route('/', teamRoutes({ db, email, appUrl: cfg.APP_URL, exposeLinks: expose }));
 
   app.route('/api', api);
   return app;

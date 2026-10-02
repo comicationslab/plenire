@@ -14,7 +14,29 @@ export const meSchema = z.object({
   practice: z.object({ id: z.string(), name: z.string(), phone: z.string(), address: z.string().nullable(), timezone: z.string() }),
 });
 
-export const loginSchema = z.object({ token: z.string(), user: z.object({ id: z.string(), name: z.string(), role: roleSchema, practiceId: z.string() }) });
+export const anyRoleSchema = z.enum(['owner', 'front_desk', 'dentist', 'hygienist', 'platform_admin']);
+export type AnyRole = z.infer<typeof anyRoleSchema>;
+export const sessionSchema = z.object({
+  accessToken: z.string(),
+  expiresIn: z.number(),
+  user: z.object({ id: z.string(), name: z.string(), email: z.string(), role: anyRoleSchema, practiceId: z.string().nullable(), practiceName: z.string().nullable() }),
+});
+export type Session = z.infer<typeof sessionSchema>;
+
+export const staffListSchema = z.array(z.object({
+  id: z.string(), name: z.string(), email: z.string(), role: roleSchema, status: z.enum(['invited', 'active', 'disabled']), acceptedAt: z.string().nullable(),
+}));
+export const inviteResultSchema = z.object({ staffId: z.string().optional(), email: z.string().optional(), emailSent: z.boolean(), inviteLink: z.string().optional() });
+export const inviteInfoSchema = z.object({ kind: z.enum(['staff_invite', 'password_reset', 'platform_invite']), email: z.string(), name: z.string(), practiceName: z.string().nullable() });
+export const forgotSchema = z.object({ ok: z.boolean(), devLink: z.string().optional() });
+export const providerIdSchema = z.object({ providerId: z.string() });
+
+export const adminPracticesSchema = z.array(z.object({
+  id: z.string(), name: z.string(), phone: z.string(), timezone: z.string(), status: z.enum(['active', 'suspended']), plan: z.string(), staffLimit: z.number(),
+  createdAt: z.string(), activeStaff: z.number(), pendingInvites: z.number(), ownerEmail: z.string().nullable(), lastActiveAt: z.string().nullable(),
+}));
+export const createPracticeResultSchema = z.object({ practiceId: z.string().optional(), ownerEmail: z.string().optional(), email: z.string().optional(), emailSent: z.boolean(), inviteLink: z.string().optional() });
+export const adminsSchema = z.array(z.object({ id: z.string(), name: z.string(), email: z.string(), status: z.enum(['invited', 'active', 'disabled']), createdAt: z.string() }));
 
 export const providerSchema = z.object({ id: z.string(), name: z.string(), initials: z.string(), chair: z.string().nullable(), title: z.string().nullable() });
 export const providersSchema = z.array(providerSchema);

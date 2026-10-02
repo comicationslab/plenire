@@ -8,13 +8,14 @@ import { createElement as h, type ReactElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { createServer, type ViteDevServer } from 'vite';
 import { createApp } from '../app';
-import { devAuth, type DevAuth } from '../auth/tokens';
+import { localTokens, type LocalTokens } from '../auth/tokens';
 import type { Db } from '../db/adapter';
-import { seedDemo, type SeededPractice } from '../db/seed';
+import { seedDemo, seedPlatformAdmin, type SeededPractice } from '../db/seed';
 import { backend, freshDb } from './helpers';
 
 describe(`screens against the real backend (${backend()})`, () => {
-  let db: Db, A: SeededPractice, vite: ViteDevServer, dev: DevAuth, app: ReturnType<typeof createApp>;
+  let adminId = '';
+  let db: Db, A: SeededPractice, vite: ViteDevServer, dev: LocalTokens, app: ReturnType<typeof createApp>;
   let M: Record<string, any>; // loaded browser modules
   const realFetch = globalThis.fetch;
 
@@ -43,11 +44,23 @@ describe(`screens against the real backend (${backend()})`, () => {
     return renderToString(tree);
   }
 
+  /** Renders any screen for any signed-in user, with exactly the data it asks for already loaded. */
+  async function renderAs(token: string, route: string, Screen: unknown, queries: unknown[], withPractice = true) {
+    M.client.setToken(token);
+    const qc = new M.rq.QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await Promise.all(queries.map((o) => qc.fetchQuery(o as never)));
+    const inner = h(Screen as never);
+    const body = withPractice ? h(M.practice.PracticeProvider, null, h(M.hipaa.HIPAAProvider, null, inner)) : inner;
+    return renderToString(h(M.rq.QueryClientProvider, { client: qc }, h(M.auth.AuthProvider, null, h(M.router.MemoryRouter, { initialEntries: [route] }, body))));
+  }
+  const tokenFor = (email: string) => dev.issue({ staffId: A.staff[email].id, practiceId: A.practiceId, role: A.staff[email].role }, 3600);
+
   before(async () => {
     db = await freshDb();
     A = await seedDemo(db);
-    dev = devAuth('a-test-secret-that-is-at-least-32-characters-long');
-    app = createApp({ db, verifier: dev, dev, provider: { send: async () => {} }, config: { CORS_ORIGINS: '', ENABLE_SIMULATOR: 'true' } });
+    adminId = await seedPlatformAdmin(db, 'admin@plenire.test', 'Platform Admin', 'Maple-Harbor-Cedar-92');
+    dev = localTokens('a-test-secret-that-is-at-least-32-characters-long');
+    app = createApp({ db, verifier: dev, tokens: dev, provider: { send: async () => {} }, config: { CORS_ORIGINS: '', ENABLE_SIMULATOR: 'true' } });
     // the browser client calls fetch('/api/...'): point it straight at the in-process server
     globalThis.fetch = ((url: string, init?: RequestInit) => app.request(url, init)) as typeof fetch;
 
@@ -61,6 +74,7 @@ describe(`screens against the real backend (${backend()})`, () => {
       today: await L('/src/components/views/CleanToday.tsx'), rec: await L('/src/components/views/CleanRecovery.tsx'),
       msg: await L('/src/components/views/CleanMessages.tsx'), pat: await L('/src/components/views/CleanPatients.tsx'),
       wl: await L('/src/components/views/CleanWaitlist.tsx'), set: await L('/src/components/views/CleanSettings.tsx'),
+      login: await L('/src/pages/Login.tsx'), team: await L('/src/pages/Team.tsx'), admin: await L('/src/pages/Admin.tsx'), invite: await L('/src/pages/AcceptInvite.tsx'),
     };
 
     // A realistic morning: Liam no-shows, offers go out, Priya says YES.
@@ -146,5 +160,73 @@ describe(`screens against the real backend (${backend()})`, () => {
     setToken('not-a-real-token');
     await assert.rejects(api('GET', '/api/me', z.object({})));
     assert.ok(signedOut);
+  });
+
+  it('the sign-in page asks for a password and has no click-to-login shortcuts', async () => {
+    const html = await renderAs('', '/login', M.login.Login, [], false);
+    assert.match(html, /type="password"/);
+    assert.match(html, /Forgot password\?/);
+    assert.ok(!/Front desk|Owner<|Local demo accounts/.test(html), 'no demo account buttons');
+  });
+
+  it('Team page (owner): lists the team with invite form and controls', async () => {
+    const html = await renderAs(await tokenFor('mensah@lakeside.test'), '/team', M.team.Team, [M.hooks.meQuery, M.hooks.providersQuery, M.hooks.staffQuery]);
+    assert.match(html, /Invite a team member/);
+    assert.ok(html.includes('Tracy R.') && html.includes('Dr. Kwame Mensah'));
+    assert.match(html, /Turn off/);
+    assert.match(html, /\(you\)/);
+  });
+
+  it('Settings: owners can manage providers; front desk cannot', async () => {
+    const q = [M.hooks.meQuery, M.hooks.providersQuery];
+    const owner = await renderAs(await tokenFor('mensah@lakeside.test'), '/settings', M.set.CleanSettings, q);
+    const desk = await renderAs(await tokenFor('tracy@lakeside.test'), '/settings', M.set.CleanSettings, q);
+    assert.match(owner, /Providers &amp; chairs/);
+    assert.ok(!/Providers &amp; chairs/.test(desk));
+    assert.match(owner, /Change password/);
+    assert.match(desk, /Change password/);
+  });
+
+  it('platform console lists clinics and offers to add one, with no patient data anywhere', async () => {
+    const platform = await dev.issue({ staffId: adminId, practiceId: null, role: 'platform_admin' }, 3600);
+    const html = await renderAs(platform, '/admin', M.admin.AdminConsole, [M.hooks.adminPracticesQuery, M.hooks.adminAdminsQuery], false);
+    assert.match(html, /Plenire Platform/);
+    assert.match(html, /Add a clinic/);
+    assert.ok(html.includes('Lakeside Dental'));
+    for (const secret of ['Isabella', 'Priya', 'Tyler', 'Crown']) assert.ok(!html.includes(secret), `console must not show ${secret}`);
+    // and the API agrees: the same token is refused on patient routes
+    assert.equal((await act(platform, 'GET', '/api/patients')).status, 403);
+  });
+
+  it('invitation page explains an unusable link instead of crashing', async () => {
+    const html = await renderAs('', '/accept-invite', M.invite.AcceptInvite, [], false);
+    assert.match(html, /isn&#x27;t working|isn't working/);
+  });
+
+  it('the browser quietly refreshes an expired token once, then retries the request', async () => {
+    const { api, setToken, setRefreshHandler } = M.client;
+    const { z } = await import('zod');
+    const good = await tokenFor('tracy@lakeside.test');
+    let refreshes = 0;
+    setToken('expired-token');
+    setRefreshHandler(async () => { refreshes++; setToken(good); return true; });
+    const me = await api('GET', '/api/me', z.object({ name: z.string() }));
+    assert.equal(me.name, 'Tracy R.');
+    assert.equal(refreshes, 1);
+    setRefreshHandler(null);
+  });
+
+  it('when refreshing fails the browser signs the person out; a wrong password is NOT treated as an expired session', async () => {
+    const { api, setToken, setRefreshHandler, setUnauthorizedHandler } = M.client;
+    const { z } = await import('zod');
+    let out = 0, refreshes = 0;
+    setUnauthorizedHandler(() => { out++; });
+    setRefreshHandler(async () => { refreshes++; return false; });
+    setToken('expired-token');
+    await assert.rejects(api('GET', '/api/me', z.object({})));
+    assert.deepEqual([out, refreshes], [1, 1]);
+    await assert.rejects(api('POST', '/auth/login', z.object({}), { email: 'tracy@lakeside.test', password: 'wrong-password-123' }), /Incorrect email or password/);
+    assert.deepEqual([out, refreshes], [1, 1], 'a failed login does not trigger refresh or sign-out');
+    setRefreshHandler(null);
   });
 });

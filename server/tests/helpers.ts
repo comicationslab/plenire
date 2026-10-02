@@ -1,4 +1,7 @@
 import { migrate, pgAdapter, pgliteAdapter, type Db } from '../db/adapter';
+import { setScryptCost } from '../services/passwords';
+
+setScryptCost(10); // fast hashing for tests only; production uses 15 (set from configuration)
 
 /** Fresh empty database per test file. Uses real Postgres when TEST_DATABASE_URL is set, otherwise PGlite. */
 export async function freshDb(): Promise<Db> {

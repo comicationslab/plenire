@@ -21,6 +21,10 @@ export const revenueQuery = queryOptions({ queryKey: ['metrics', 'revenue'], que
 export const auditQuery = queryOptions({ queryKey: ['audit'], queryFn: () => api('GET', '/api/audit', S.auditSchema) });
 export const auditVerifyQuery = queryOptions({ queryKey: ['audit', 'verify'], queryFn: () => api('GET', '/api/audit/verify', S.auditVerifySchema) });
 
+export const staffQuery = queryOptions({ queryKey: ['staff'], queryFn: () => api('GET', '/api/staff', S.staffListSchema) });
+export const adminPracticesQuery = queryOptions({ queryKey: ['admin', 'practices'], queryFn: () => api('GET', '/api/platform/practices', S.adminPracticesSchema), refetchInterval: 60 * SECOND });
+export const adminAdminsQuery = queryOptions({ queryKey: ['admin', 'admins'], queryFn: () => api('GET', '/api/platform/admins', S.adminsSchema) });
+
 export const useMe = () => useQuery(meQuery);
 export const useProviders = () => useQuery(providersQuery);
 export const useAppointments = () => useQuery(appointmentsQuery);
@@ -35,6 +39,10 @@ export const useRecoveryRate = () => useQuery(recoveryRateQuery);
 export const useRevenue = (enabled: boolean) => useQuery({ ...revenueQuery, enabled });
 export const useAudit = (enabled: boolean) => useQuery({ ...auditQuery, enabled });
 export const useAuditVerify = (enabled: boolean) => useQuery({ ...auditVerifyQuery, enabled });
+
+export const useStaff = (enabled: boolean) => useQuery({ ...staffQuery, enabled });
+export const useAdminPractices = () => useQuery(adminPracticesQuery);
+export const useAdminAdmins = () => useQuery(adminAdminsQuery);
 
 /** After any change, refresh everything: the data set is small and correctness beats cleverness here. */
 function useWrite<V, R>(fn: (v: V) => Promise<R>) {
@@ -72,3 +80,24 @@ export const useBook = () => useWrite((b: BookingInput) => api('POST', '/api/boo
 
 /** Fire-and-forget: workstation events (lock, unlock, shield) join the same tamper-evident log. */
 export const reportWorkstationEvent = (action: string) => api('POST', '/api/audit/events', S.okSchema, { action }).catch(() => {});
+
+// ───────── team, providers, account, and the operator console ─────────
+export const useInviteStaff = () =>
+  useWrite((v: { email: string; name: string; role: 'owner' | 'front_desk' | 'dentist' | 'hygienist' }) => api('POST', '/api/staff/invite', S.inviteResultSchema, v));
+export const useResendInvite = () => useWrite((staffId: string) => api('POST', `/api/staff/${staffId}/resend`, S.inviteResultSchema, {}));
+export const useUpdateStaff = () =>
+  useWrite((v: { id: string; role?: 'owner' | 'front_desk' | 'dentist' | 'hygienist'; active?: boolean }) => api('PATCH', `/api/staff/${v.id}`, S.okSchema, { role: v.role, active: v.active }));
+export const useAddProvider = () =>
+  useWrite((v: { name: string; initials: string; chair: string | null; title: string | null }) => api('POST', '/api/providers', S.providerIdSchema, v));
+export const useUpdateProvider = () =>
+  useWrite((v: { id: string; active?: boolean; chair?: string | null; name?: string }) => api('PATCH', `/api/providers/${v.id}`, S.okSchema, { active: v.active, chair: v.chair, name: v.name }));
+/** Practice staff and platform admins change their own password through different (equally strict) endpoints. */
+export const useChangePassword = (platform: boolean) =>
+  useMutation({ mutationFn: (v: { currentPassword: string; newPassword: string }) => api('POST', platform ? '/api/platform/account/password' : '/api/account/password', S.okSchema, v) });
+
+export interface NewPracticeInput { name: string; phone: string; address: string | null; timezone: string; ownerName: string; ownerEmail: string; staffLimit?: number }
+export const useCreatePractice = () => useWrite((v: NewPracticeInput) => api('POST', '/api/platform/practices', S.createPracticeResultSchema, v));
+export const useUpdatePractice = () =>
+  useWrite((v: { id: string; status?: 'active' | 'suspended'; staffLimit?: number }) => api('PATCH', `/api/platform/practices/${v.id}`, S.okSchema, { status: v.status, staffLimit: v.staffLimit }));
+export const useOwnerInvite = () => useWrite((v: { id: string; email?: string; name?: string }) => api('POST', `/api/platform/practices/${v.id}/owner-invite`, S.createPracticeResultSchema, { email: v.email, name: v.name }));
+export const useInviteAdmin = () => useWrite((v: { email: string; name: string }) => api('POST', '/api/platform/admins', S.createPracticeResultSchema, v));

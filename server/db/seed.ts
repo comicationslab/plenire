@@ -1,7 +1,8 @@
 import type { Db } from './adapter';
 import type { Role } from '../auth/tokens';
+import { hashPassword } from '../services/passwords';
 
-export interface SeedStaff { email: string; name: string; role: Role }
+export interface SeedStaff { email: string; name: string; role: Role; password?: string }
 export interface SeededPractice { practiceId: string; staff: Record<string, { id: string; role: Role }>; patients: Record<string, string>; providers: Record<string, string>; appointments: Record<string, string> }
 
 /** Creates a practice with staff, providers, patients, today's schedule, a waitlist and a fee schedule. */
@@ -18,8 +19,9 @@ export async function seedPractice(
     ]);
     out.practiceId = p.id;
     for (const s of opts.staff) {
-      const [r] = await q.query<{ id: string }>('INSERT INTO staff (practice_id, email, name, role) VALUES ($1,$2,$3,$4) RETURNING id', [p.id, s.email, s.name, s.role]);
+      const [r] = await q.query<{ id: string }>("INSERT INTO staff (practice_id, email, name, role, status, accepted_at) VALUES ($1,$2,$3,$4,'active', now()) RETURNING id", [p.id, s.email.toLowerCase(), s.name, s.role]);
       out.staff[s.email] = { id: r.id, role: s.role };
+      if (s.password) await q.query("INSERT INTO credentials (principal_id, principal_type, password_hash) VALUES ($1,'staff',$2)", [r.id, await hashPassword(s.password)]);
     }
   });
   if (opts.withSchedule === false) return out;
@@ -81,9 +83,19 @@ export async function seedPractice(
   return out;
 }
 
+/** Local development only. Real users always choose their own password from an invitation link. */
+export const DEMO_PASSWORD = 'Maple-Harbor-Cedar-92';
 export const DEMO_STAFF: SeedStaff[] = [
-  { email: 'tracy@lakeside.test', name: 'Tracy R.', role: 'front_desk' },
-  { email: 'mensah@lakeside.test', name: 'Dr. Kwame Mensah', role: 'owner' },
+  { email: 'tracy@lakeside.test', name: 'Tracy R.', role: 'front_desk', password: DEMO_PASSWORD },
+  { email: 'mensah@lakeside.test', name: 'Dr. Kwame Mensah', role: 'owner', password: DEMO_PASSWORD },
 ];
+
+export async function seedPlatformAdmin(db: Db, email: string, name: string, password: string): Promise<string> {
+  return db.admin(async (q) => {
+    const [a] = await q.query<{ id: string }>("INSERT INTO platform_admins (email, name, status) VALUES ($1,$2,'active') RETURNING id", [email.toLowerCase(), name]);
+    await q.query("INSERT INTO credentials (principal_id, principal_type, password_hash) VALUES ($1,'platform',$2)", [a.id, await hashPassword(password)]);
+    return a.id;
+  });
+}
 
 export const seedDemo = (db: Db) => seedPractice(db, { name: 'Lakeside Dental', phone: '(555) 010-0100', staff: DEMO_STAFF, history: true });

@@ -3,57 +3,66 @@
  * Uses the built-in local database, nothing to install. Prints what happens at each step.
  */
 import { createApp } from './app';
-import { devAuth } from './auth/tokens';
+import { localTokens } from './auth/tokens';
 import { migrate, pgliteAdapter } from './db/adapter';
-import { seedDemo } from './db/seed';
+import { DEMO_PASSWORD, seedDemo, seedPlatformAdmin } from './db/seed';
 import type { MessageProvider } from './services/messaging';
+import { setScryptCost } from './services/passwords';
 
+setScryptCost(10);
 const db = await pgliteAdapter();
 await migrate(db);
 const seeded = await seedDemo(db);
-const dev = devAuth();
+await seedPlatformAdmin(db, 'admin@plenire.test', 'Platform Admin', DEMO_PASSWORD);
+const tokens = localTokens();
 const texts: string[] = [];
 const provider: MessageProvider = { send: async (to) => void texts.push(to) };
-const app = createApp({ db, verifier: dev, dev, provider, config: { CORS_ORIGINS: '', ENABLE_SIMULATOR: 'true' } });
+const app = createApp({ db, verifier: tokens, tokens, provider, config: { CORS_ORIGINS: '', ENABLE_SIMULATOR: 'true', AUTH_RATE_LIMIT_PER_MINUTE: 1000 } });
 
-const api = async (method: string, path: string, token?: string, body?: unknown) => {
+const call = async (method: string, path: string, token?: string, body?: unknown) => {
   const r = await app.request(path, { method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
   return { status: r.status, data: (await r.json()) as any };
 };
+const signIn = async (email: string, password = DEMO_PASSWORD) => (await call('POST', '/auth/login', undefined, { email, password })).data.accessToken as string;
 const say = (s: string) => console.log(s);
 const usd = (c: number) => '$' + (c / 100).toLocaleString('en-US');
 
-say('\n1. Tracy (front desk) signs in');
-const tracy = (await api('POST', '/auth/dev-login', undefined, { email: 'tracy@lakeside.test' })).data.token;
-const mensah = (await api('POST', '/auth/dev-login', undefined, { email: 'mensah@lakeside.test' })).data.token;
-say('   Got a signed, expiring token. The token itself says which practice and role she has.');
+say('\n1. Sign-in needs a real password now');
+const wrong = await call('POST', '/auth/login', undefined, { email: 'tracy@lakeside.test', password: 'wrong-password-123' });
+say(`   Wrong password → HTTP ${wrong.status} "${wrong.data.error.message}"`);
+const tracy = await signIn('tracy@lakeside.test');
+const mensah = await signIn('mensah@lakeside.test');
+say('   Right password → a short-lived signed token (10 minutes) plus a private refresh cookie.');
 
-say('\n2. Isabella does not show up for her 2:00 PM crown appointment');
-const ns = await api('PATCH', `/api/appointments/${seeded.appointments['Isabella Flores']}/status`, tracy, { status: 'noshow' });
-say(`   An empty slot (opening) was created automatically: ${ns.data.openingId.slice(0, 8)}…`);
+say('\n2. You (platform admin) add a brand-new clinic and invite its owner');
+const admin = await signIn('admin@plenire.test');
+const created = await call('POST', '/api/platform/practices', admin, { name: 'Riverbend Family Dental', phone: '(555) 010-0200', timezone: 'America/New_York', ownerName: 'Dr. Dana Reyes', ownerEmail: 'dana@riverbend.test' });
+say(`   Practice created. Dana gets a one-time link to choose her OWN password (${created.data.inviteLink.slice(0, 48)}…)`);
+const token = new URL(created.data.inviteLink).searchParams.get('token');
+const accepted = await call('POST', '/auth/accept-invite', undefined, { token, password: 'Orange-Falcon-Lantern-27' });
+say(`   Dana chose a password and is signed in as: ${accepted.data.user.role} of ${accepted.data.user.practiceName}`);
+const peek = await call('GET', '/api/patients', admin);
+say(`   You, the platform admin, asking for patient data → HTTP ${peek.status} ${peek.data.error.code} (the operator console never sees patients)`);
 
-say('\n3. Plenire texts the best people on the waitlist');
-const offers = await api('POST', `/api/openings/${ns.data.openingId}/offers`, tracy, { limit: 3 });
-say(`   ${offers.data.offered} patients offered the slot. ${texts.length} texts handed to the carrier.`);
-say('   (Hannah is on the waitlist but never agreed to texts, so she is skipped.)');
+say('\n3. Meanwhile, at Lakeside Dental: Isabella no-shows her 2:00 PM crown appointment');
+const ns = await call('PATCH', `/api/appointments/${seeded.appointments['Isabella Flores']}/status`, tracy, { status: 'noshow' });
+const offers = await call('POST', `/api/openings/${ns.data.openingId}/offers`, tracy, { limit: 3 });
+say(`   ${offers.data.offered} waitlisted patients were texted. Priya replies YES:`);
+const priya = await call('POST', `/api/patients/${seeded.patients['Priya Shah']}/simulate-reply`, tracy, { body: 'YES' });
+say(`   → ${priya.data.outcome}`);
 
-say('\n4. Priya replies YES, and Tyler replies YES a moment later');
-const priya = await api('POST', `/api/patients/${seeded.patients['Priya Shah']}/simulate-reply`, tracy, { body: 'YES' });
-const tyler = await api('POST', `/api/patients/${seeded.patients['Tyler Green']}/simulate-reply`, tracy, { body: 'YES' });
-say(`   Priya: ${priya.data.outcome}.  Tyler: ${tyler.data.outcome} (the slot was already taken).`);
+say('\n4. Dashboards');
+const rate = await call('GET', '/api/metrics/recovery', tracy);
+say(`   Front desk → recovery rate ${rate.data.period.ratePercent}%. Asking for revenue → HTTP ${(await call('GET', '/api/metrics/revenue', tracy)).status}`);
+const rev = await call('GET', '/api/metrics/revenue', mensah);
+say(`   Owner → estimated revenue recovered ${usd(rev.data.period.revenueCents)}`);
 
-say('\n5. What each person sees on their dashboard');
-const rate = await api('GET', '/api/metrics/recovery', tracy);
-say(`   Front desk  → recovery rate ${rate.data.period.ratePercent}% (${rate.data.period.filled} of ${rate.data.period.openings} openings filled). No dollar amounts.`);
-const blocked = await api('GET', '/api/metrics/revenue', tracy);
-say(`   Front desk asking for revenue → HTTP ${blocked.status} ${blocked.data.error.code}`);
-const rev = await api('GET', '/api/metrics/revenue', mensah);
-say(`   Owner       → estimated revenue recovered ${usd(rev.data.period.revenueCents)} (from the practice's own fee list)`);
+say('\n5. Dana (new clinic) sees none of Lakeside\'s data');
+const dana = accepted.data.accessToken as string;
+say(`   Dana\'s patients: ${(await call('GET', '/api/patients', dana)).data.length}   (Lakeside has ${(await call('GET', '/api/patients', tracy)).data.length})`);
 
-say('\n6. The tamper-proof activity log');
-const log = await api('GET', '/api/audit', mensah);
-for (const e of [...log.data].reverse()) say(`   #${e.seq}  ${e.action}`);
-const ver = await api('GET', '/api/audit/verify', mensah);
-say(`   Chain check: ${ver.data.intact ? 'intact ✔' : 'BROKEN at #' + ver.data.firstBrokenSeq}`);
-say('\nDone. Everything above used a real database with per-practice isolation.\n');
+say('\n6. Tamper-proof activity log');
+const log = await call('GET', '/api/audit', mensah);
+say(`   ${log.data.length} entries, chain check: ${(await call('GET', '/api/audit/verify', mensah)).data.intact ? 'intact ✔' : 'BROKEN'}`);
+say('\nDone.\n');
 await db.close();

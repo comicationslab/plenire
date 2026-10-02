@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { createApp } from '../app';
-import { devAuth, type DevAuth } from '../auth/tokens';
+import { localTokens, type LocalTokens } from '../auth/tokens';
 import type { Db } from '../db/adapter';
 import { seedDemo, seedPractice, type SeededPractice } from '../db/seed';
 import type { MessageProvider } from '../services/messaging';
 import { backend, freshDb } from './helpers';
 
 describe(`endpoints behind the screens (${backend()})`, () => {
-  let db: Db, A: SeededPractice, B: SeededPractice, dev: DevAuth, app: ReturnType<typeof createApp>, fd: string, owner: string, bOwner: string;
+  let db: Db, A: SeededPractice, B: SeededPractice, dev: LocalTokens, app: ReturnType<typeof createApp>, fd: string, owner: string, bOwner: string;
   const provider: MessageProvider = { send: async () => {} };
   const call = async (method: string, path: string, tok: string, body?: unknown) => {
     const res = await app.request(path, { method, headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
@@ -21,8 +21,8 @@ describe(`endpoints behind the screens (${backend()})`, () => {
     db = await freshDb();
     A = await seedDemo(db);
     B = await seedPractice(db, { name: 'Other Dental', phone: '(555) 020-0200', staff: [{ email: 'b@b.test', name: 'B Owner', role: 'owner' }] });
-    dev = devAuth('a-test-secret-that-is-at-least-32-characters-long');
-    app = createApp({ db, verifier: dev, dev, provider, config: { CORS_ORIGINS: '', ENABLE_SIMULATOR: 'true' } });
+    dev = localTokens('a-test-secret-that-is-at-least-32-characters-long');
+    app = createApp({ db, verifier: dev, tokens: dev, provider, config: { CORS_ORIGINS: '', ENABLE_SIMULATOR: 'true' } });
     fd = await tok(A, 'tracy@lakeside.test');
     owner = await tok(A, 'mensah@lakeside.test');
     bOwner = await tok(B, 'b@b.test');

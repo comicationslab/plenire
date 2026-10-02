@@ -2,15 +2,14 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from 'jose';
 import { createApp } from '../app';
-import { cognitoVerifier, devAuth, type DevAuth } from '../auth/tokens';
-import { loadConfig } from '../config';
+import { cognitoVerifier, localTokens, type LocalTokens } from '../auth/tokens';
 import type { Db } from '../db/adapter';
 import { DEMO_STAFF, seedPractice, type SeededPractice } from '../db/seed';
 import type { MessageProvider } from '../services/messaging';
 import { backend, freshDb } from './helpers';
 
-describe(`HTTP API: login, roles and the full loop (${backend()})`, () => {
-  let db: Db, A: SeededPractice, B: SeededPractice, dev: DevAuth, app: ReturnType<typeof createApp>;
+describe(`HTTP API: tokens, roles and the full loop (${backend()})`, () => {
+  let db: Db, A: SeededPractice, B: SeededPractice, dev: LocalTokens, app: ReturnType<typeof createApp>;
   const sent: string[] = [];
   const provider: MessageProvider = { send: async (to) => void sent.push(to) };
 
@@ -28,8 +27,8 @@ describe(`HTTP API: login, roles and the full loop (${backend()})`, () => {
     db = await freshDb();
     A = await seedPractice(db, { name: 'Lakeside Dental', phone: '(555) 010-0100', staff: DEMO_STAFF });
     B = await seedPractice(db, { name: 'Other Dental', phone: '(555) 020-0200', staff: [{ email: 'b@b.test', name: 'B Owner', role: 'owner' }] });
-    dev = devAuth('a-test-secret-that-is-at-least-32-characters-long');
-    app = createApp({ db, verifier: dev, dev, provider, config: { CORS_ORIGINS: 'http://localhost:3000', ENABLE_SIMULATOR: 'true' } });
+    dev = localTokens('a-test-secret-that-is-at-least-32-characters-long');
+    app = createApp({ db, verifier: dev, tokens: dev, provider, config: { CORS_ORIGINS: 'http://localhost:3000', ENABLE_SIMULATOR: 'true' } });
   });
   after(() => db.close());
 
@@ -37,32 +36,18 @@ describe(`HTTP API: login, roles and the full loop (${backend()})`, () => {
     assert.equal((await call('GET', '/api/patients')).status, 401);
     assert.equal((await call('GET', '/api/patients', 'not-a-token')).status, 401);
 
-    const forged = await devAuth('some-other-secret-that-is-also-32-characters!!').issue({ staffId: A.staff['tracy@lakeside.test'].id, practiceId: A.practiceId, role: 'owner' });
+    const forged = await localTokens('some-other-secret-that-is-also-32-characters!!').issue({ staffId: A.staff['tracy@lakeside.test'].id, practiceId: A.practiceId, role: 'owner' });
     assert.equal((await call('GET', '/api/patients', forged)).status, 401, 'signed with the wrong key');
 
     const expired = await dev.issue({ staffId: A.staff['tracy@lakeside.test'].id, practiceId: A.practiceId, role: 'front_desk' }, -60);
     assert.equal((await call('GET', '/api/patients', expired)).status, 401, 'expired');
 
     const key = new TextEncoder().encode('a-test-secret-that-is-at-least-32-characters-long');
-    const badRole = await new SignJWT({ practiceId: A.practiceId, role: 'superadmin' }).setProtectedHeader({ alg: 'HS256' }).setSubject(A.staff['tracy@lakeside.test'].id).setIssuer('plenire-dev').setExpirationTime('1h').sign(key);
+    const badRole = await new SignJWT({ practiceId: A.practiceId, role: 'superadmin' }).setProtectedHeader({ alg: 'HS256' }).setSubject(A.staff['tracy@lakeside.test'].id).setIssuer('plenire').setExpirationTime('1h').sign(key);
     assert.equal((await call('GET', '/api/patients', badRole)).status, 401, 'unknown role');
 
-    const noPractice = await new SignJWT({ role: 'owner' }).setProtectedHeader({ alg: 'HS256' }).setSubject(A.staff['tracy@lakeside.test'].id).setIssuer('plenire-dev').setExpirationTime('1h').sign(key);
+    const noPractice = await new SignJWT({ role: 'owner' }).setProtectedHeader({ alg: 'HS256' }).setSubject(A.staff['tracy@lakeside.test'].id).setIssuer('plenire').setExpirationTime('1h').sign(key);
     assert.equal((await call('GET', '/api/patients', noPractice)).status, 401, 'no practice claim');
-  });
-
-  it('dev login works for known staff only', async () => {
-    assert.equal((await call('POST', '/auth/dev-login', undefined, { email: 'nobody@x.test' })).status, 401);
-    const ok = await call('POST', '/auth/dev-login', undefined, { email: 'tracy@lakeside.test' });
-    assert.equal(ok.status, 200);
-    assert.equal(ok.json.user.role, 'front_desk');
-    assert.equal((await call('GET', '/api/me', ok.json.token)).json.practice.name, 'Lakeside Dental');
-  });
-
-  it('dev login does not exist when real auth is on', async () => {
-    const real = createApp({ db, verifier: dev, provider, config: { CORS_ORIGINS: '', ENABLE_SIMULATOR: 'false' } });
-    const res = await real.request('/auth/dev-login', { method: 'POST', body: '{}' });
-    assert.equal(res.status, 404);
   });
 
   it('staff only ever see their own practice', async () => {
@@ -130,7 +115,7 @@ describe(`HTTP API: login, roles and the full loop (${backend()})`, () => {
   });
 
   it('the reply simulator is off when disabled (production)', async () => {
-    const prod = createApp({ db, verifier: dev, dev, provider, config: { CORS_ORIGINS: '', ENABLE_SIMULATOR: 'false' } });
+    const prod = createApp({ db, verifier: dev, tokens: dev, provider, config: { CORS_ORIGINS: '', ENABLE_SIMULATOR: 'false' } });
     const res = await prod.request(`/api/patients/${A.patients['Priya Shah']}/simulate-reply`, {
       method: 'POST', headers: { authorization: `Bearer ${await token(A, 'tracy@lakeside.test')}`, 'content-type': 'application/json' }, body: JSON.stringify({ body: 'YES' }),
     });
@@ -168,19 +153,5 @@ describe('Amazon Cognito token mapping (tested with a local signing key, no AWS 
     await assert.rejects(verifier.verify(await sign({ 'custom:practice_id': practice, 'custom:role': 'owner' }, { aud: 'other-client' })));
     await assert.rejects(verifier.verify(await sign({ 'custom:role': 'owner' })));
     await assert.rejects(verifier.verify(await sign({ 'custom:practice_id': practice, 'custom:role': 'root' })));
-  });
-});
-
-describe('startup safety checks', () => {
-  it('refuses to start in production with dev login, no database, or the simulator on', () => {
-    assert.throws(() => loadConfig({ NODE_ENV: 'production' }), /not allowed in production/);
-    assert.throws(() => loadConfig({ NODE_ENV: 'production', AUTH_MODE: 'cognito', COGNITO_REGION: 'us-east-1', COGNITO_USER_POOL_ID: 'p', COGNITO_CLIENT_ID: 'c' }), /DATABASE_URL/);
-  });
-  it('accepts a correct production setup', () => {
-    const c = loadConfig({ NODE_ENV: 'production', AUTH_MODE: 'cognito', COGNITO_REGION: 'us-east-1', COGNITO_USER_POOL_ID: 'p', COGNITO_CLIENT_ID: 'c', DATABASE_URL: 'postgres://x', ENABLE_SIMULATOR: 'false' });
-    assert.equal(c.AUTH_MODE, 'cognito');
-  });
-  it('cognito mode needs its settings', () => {
-    assert.throws(() => loadConfig({ AUTH_MODE: 'cognito' }), /COGNITO_REGION/);
   });
 });

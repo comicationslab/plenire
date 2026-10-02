@@ -7,7 +7,7 @@ import { roleLabel, usePractice } from '../context/PracticeContext';
 import { todayLong } from '../lib/format';
 import {
   CalendarDays, Eye, EyeOff, LayoutDashboard, ListChecks, Lock, Menu, MessageSquare, RefreshCcw,
-  LogOut, Settings as SettingsIcon, ShieldCheck, Users, X,
+  LogOut, Settings as SettingsIcon, ShieldCheck, UserCog, Users, X,
 } from 'lucide-react';
 
 const NAV = [
@@ -17,6 +17,7 @@ const NAV = [
   { path: '/messages', label: 'Messages', Icon: MessageSquare },
   { path: '/patients', label: 'Patients', Icon: Users },
   { path: '/waitlist', label: 'Waitlist', Icon: ListChecks },
+  { path: '/team', label: 'Team', Icon: UserCog, ownerOnly: true },
   { path: '/settings', label: 'Settings', Icon: SettingsIcon },
 ];
 
@@ -116,6 +117,7 @@ export const CleanLayout: React.FC = () => {
     messages: { title: 'Messages', sub: 'Two-way SMS conversations with patients' },
     patients: { title: 'Patients', sub: 'Patient history, contact details & recovery activity' },
     waitlist: { title: 'Waitlist', sub: 'Everyone ready to take an earlier opening' },
+    team: { title: 'Team', sub: 'Invite people and manage who can sign in' },
     settings: { title: 'Settings', sub: 'Messaging, screen lock & practice preferences' },
   };
   const current = titles[pathname.split('/')[1] ?? ''] ?? { title: practice.name, sub: '' };
@@ -144,7 +146,7 @@ export const CleanLayout: React.FC = () => {
           </div>
 
           <nav aria-label="Main" className="px-3 flex-1 space-y-1">
-            {NAV.map(({ path, label, Icon }) => (
+            {NAV.filter((n) => !('ownerOnly' in n) || isOwner).map(({ path, label, Icon }) => (
               <NavLink
                 key={path}
                 to={path}
@@ -179,7 +181,7 @@ export const CleanLayout: React.FC = () => {
                 <div className="text-[11px] text-[#1e2a28]/70 truncate">{roleLabel(role)} · {practice.name}</div>
               </div>
             </div>
-            <button onClick={logout} className="w-full flex items-center justify-center gap-1.5 py-1.5 border border-[#1e2a28]/30 text-[11px] font-semibold text-[#1e2a28]/80 hover:bg-[#1e2a28]/5">
+            <button onClick={() => void logout()} className="w-full flex items-center justify-center gap-1.5 py-1.5 border border-[#1e2a28]/30 text-[11px] font-semibold text-[#1e2a28]/80 hover:bg-[#1e2a28]/5">
               <LogOut className="w-3.5 h-3.5" aria-hidden="true" /> Sign out
             </button>
           </div>

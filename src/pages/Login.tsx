@@ -1,64 +1,55 @@
 import React, { useState } from 'react';
-import { Navigate } from 'react-router';
+import { Link, Navigate } from 'react-router';
+import { ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { AuthShell, ErrorLine, Field, inputCls, primaryBtn } from '../components/ui/Auth';
 
-const DEMO = [
-  { email: 'tracy@lakeside.test', label: 'Front desk', who: 'Tracy R.' },
-  { email: 'mensah@lakeside.test', label: 'Owner', who: 'Dr. Mensah' },
-];
+export const homeFor = (role: string) => (role === 'platform_admin' ? '/admin' : '/dashboard');
 
 export const Login: React.FC = () => {
-  const { session, login } = useAuth();
+  const { session, status, login } = useAuth();
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  if (session) return <Navigate to="/dashboard" replace />;
+  if (status === 'ready' && session) return <Navigate to={homeFor(session.user.role)} replace />;
 
-  const go = async (e: string) => {
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setBusy(true);
     setError('');
     try {
-      await login(e.trim());
+      await login(email.trim(), password);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not sign in');
+      setError(err instanceof ApiError ? err.message : 'Could not sign in');
+      setPassword('');
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-[#f4f0e8] text-[#1e2a28] p-6">
-      <div className="w-full max-w-sm border border-[#1e2a28] p-7 space-y-5">
-        <div className="flex items-center gap-2.5">
-          <div aria-hidden="true" className="w-8 h-8 rounded-full border border-[#1e2a28] flex items-center justify-center font-bold text-[12px]">pl</div>
-          <h1 className="font-bold text-[20px] tracking-tight m-0">Plenire</h1>
-        </div>
-        <p className="text-[13px] text-[#1e2a28]/70 m-0">Sign in to your practice.</p>
-
-        <form onSubmit={(e) => { e.preventDefault(); void go(email); }} className="space-y-3">
-          <label htmlFor="email" className="block text-[12px] font-semibold">Work email</label>
-          <input id="email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)}
-            className="w-full h-[38px] px-3 bg-white border border-[#1e2a28]/40 text-sm" />
-          {error && <div role="alert" className="text-xs text-[#a3533a] font-semibold">{error}</div>}
-          <button type="submit" disabled={busy} className="w-full py-2 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold disabled:opacity-60">
-            {busy ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
-
-        <div className="border-t border-[#1e2a28]/15 pt-4 space-y-2">
-          <div className="text-[11px] uppercase tracking-wider font-bold text-[#a3533a]">Local demo accounts</div>
-          <div className="grid grid-cols-2 gap-2">
-            {DEMO.map((d) => (
-              <button key={d.email} disabled={busy} onClick={() => void go(d.email)} className="p-2.5 border border-[#1e2a28]/30 text-left hover:bg-[#1e2a28]/5 disabled:opacity-60">
-                <span className="block text-xs font-semibold">{d.label}</span>
-                <span className="block text-[11px] text-[#1e2a28]/70">{d.who}</span>
-              </button>
-            ))}
-          </div>
-          <p className="text-[11px] text-[#1e2a28]/70 m-0 leading-relaxed">Development sign-in only. Real accounts (password + MFA) arrive with the AWS setup.</p>
-        </div>
+    <AuthShell title="Sign in" subtitle="Use the email and password you chose when you accepted your invitation.">
+      <form onSubmit={(e) => void submit(e)} className="space-y-3">
+        <Field id="email" label="Work email">
+          <input id="email" type="email" autoComplete="username" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} />
+        </Field>
+        <Field id="password" label="Password">
+          <input id="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} />
+        </Field>
+        <ErrorLine message={error} />
+        <button type="submit" disabled={busy || !email || !password} className={primaryBtn}>{busy ? 'Signing in…' : 'Sign in'}</button>
+      </form>
+      <div className="text-[12px] flex justify-between">
+        <Link to="/forgot-password" className="underline font-semibold text-[#a3533a]">Forgot password?</Link>
       </div>
-    </main>
+      {import.meta.env.DEV && (
+        <p className="text-[11px] text-[#1e2a28]/70 m-0 leading-relaxed border-t border-[#1e2a28]/15 pt-3">
+          Development: demo accounts and their password are printed in the terminal where the API started
+          (admin@plenire.test, mensah@lakeside.test, tracy@lakeside.test).
+        </p>
+      )}
+    </AuthShell>
   );
 };

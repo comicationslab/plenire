@@ -5,18 +5,27 @@ import type { Config } from '../config';
 
 export const ROLES = ['owner', 'front_desk', 'dentist', 'hygienist'] as const;
 export type Role = (typeof ROLES)[number];
+export const PLATFORM_ADMIN = 'platform_admin' as const;
+export type AnyRole = Role | typeof PLATFORM_ADMIN;
 
 export interface Claims {
+  /** Staff member id, or platform-admin id */
   staffId: string;
-  practiceId: string;
-  role: Role;
+  /** null for platform admins: they belong to no practice */
+  practiceId: string | null;
+  role: AnyRole;
+  /** Sign-in session id, so "sign out my other devices" knows which one to keep */
+  sid?: string;
 }
 
-const claimsSchema = z.object({
-  sub: z.string().uuid(),
-  practiceId: z.string().uuid(),
-  role: z.enum(ROLES),
-});
+const claimsSchema = z
+  .object({
+    sub: z.string().uuid(),
+    practiceId: z.string().uuid().nullish(),
+    role: z.enum([...ROLES, PLATFORM_ADMIN]),
+    sid: z.string().uuid().optional(),
+  })
+  .refine((c) => (c.role === PLATFORM_ADMIN ? !c.practiceId : Boolean(c.practiceId)), 'Token needs a practice (or be a platform admin)');
 
 export interface Verifier {
   verify(token: string): Promise<Claims>;
@@ -42,7 +51,7 @@ export function makeVerifier(opts: Options): Verifier {
       });
       const parsed = claimsSchema.safeParse(opts.map(payload));
       if (!parsed.success) throw new Error('Token is missing practice or role');
-      return { staffId: parsed.data.sub, practiceId: parsed.data.practiceId, role: parsed.data.role };
+      return { staffId: parsed.data.sub, practiceId: parsed.data.practiceId ?? null, role: parsed.data.role, ...(parsed.data.sid ? { sid: parsed.data.sid } : {}) };
     },
   };
 }
@@ -65,40 +74,40 @@ export function cognitoVerifier(cfg: { region: string; poolId: string; clientId:
   });
 }
 
-/** Local development only: tokens signed with a shared secret by our own /auth/dev-login. */
-export interface DevAuth extends Verifier {
+/** Plenire's own sign-in: short-lived access tokens signed with a server secret. */
+export interface LocalTokens extends Verifier {
   issue(claims: Claims, ttlSeconds?: number): Promise<string>;
 }
 
-export function devAuth(secret?: string): DevAuth {
+export function localTokens(secret?: string): LocalTokens {
   const key = new TextEncoder().encode(secret ?? randomBytes(32).toString('hex'));
   const inner = makeVerifier({
     key,
     algorithms: ['HS256'],
-    issuer: 'plenire-dev',
-    map: (p) => ({ sub: p.sub, practiceId: p.practiceId, role: p.role }),
+    issuer: 'plenire',
+    map: (p) => ({ sub: p.sub, practiceId: p.practiceId, role: p.role, sid: p.sid }),
   });
   return {
     verify: inner.verify,
-    issue: (c, ttl = 8 * 3600) =>
-      new SignJWT({ practiceId: c.practiceId, role: c.role })
+    issue: (c, ttl = 900) =>
+      new SignJWT({ practiceId: c.practiceId, role: c.role, ...(c.sid ? { sid: c.sid } : {}) })
         .setProtectedHeader({ alg: 'HS256' })
         .setSubject(c.staffId)
-        .setIssuer('plenire-dev')
+        .setIssuer('plenire')
         .setIssuedAt()
         .setExpirationTime(`${ttl}s`)
         .sign(key),
   };
 }
 
-export function verifierFor(cfg: Config): { verifier: Verifier; dev?: DevAuth } {
+export function verifierFor(cfg: Config): { verifier: Verifier; tokens?: LocalTokens } {
   if (cfg.AUTH_MODE === 'cognito') {
     return {
       verifier: cognitoVerifier({ region: cfg.COGNITO_REGION!, poolId: cfg.COGNITO_USER_POOL_ID!, clientId: cfg.COGNITO_CLIENT_ID! }),
     };
   }
-  const dev = devAuth(cfg.DEV_JWT_SECRET);
-  return { verifier: dev, dev };
+  const tokens = localTokens(cfg.AUTH_JWT_SECRET);
+  return { verifier: tokens, tokens };
 }
 
 export { createLocalJWKSet };

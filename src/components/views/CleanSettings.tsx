@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { useHIPAA } from '../../context/HIPAAContext';
 import { usePractice } from '../../context/PracticeContext';
+import { ApiError } from '../../api/client';
+import { useAddProvider, useProviders, useUpdateProvider } from '../../api/hooks';
+import { ChangePasswordCard } from '../ui/ChangePassword';
 import { PageHead } from '../ui/Metric';
 
 const Pill: React.FC<{ children: React.ReactNode }> = ({ children }) => (
@@ -52,8 +55,37 @@ const ScreenLockCard: React.FC = () => {
   );
 };
 
+const ProvidersCard: React.FC = () => {
+  const providers = useProviders();
+  const add = useAddProvider();
+  const update = useUpdateProvider();
+  const [f, setF] = useState({ name: '', initials: '', chair: '', title: '' });
+  const [err, setErr] = useState('');
+  const fail = (e: unknown) => setErr(e instanceof ApiError ? e.message : 'Something went wrong');
+  return (
+    <Card title="Providers & chairs">
+      <p className="text-[12px] text-[#1e2a28]/70 leading-relaxed m-0">Everyone who sees patients. Each needs a chair or room to appear on the schedule.</p>
+      <ul className="m-0 p-0 list-none divide-y divide-[#1e2a28]/10">
+        {(providers.data ?? []).map((p) => (
+          <li key={p.id} className="py-1.5 flex items-center justify-between text-[12px]">
+            <span><b>{p.name}</b> <span className="text-[#1e2a28]/70">· {p.chair ?? 'no chair'}{p.title ? ` · ${p.title}` : ''}</span></span>
+            <button onClick={() => { if (window.confirm(`Remove ${p.name} from the schedule? Past visits are kept.`)) update.mutate({ id: p.id, active: false }, { onError: fail }); }} className="text-[11px] underline font-semibold text-[#a3533a]">Remove</button>
+          </li>
+        ))}
+      </ul>
+      <form onSubmit={(e) => { e.preventDefault(); setErr(''); add.mutate({ name: f.name, initials: f.initials || f.name.split(' ').map((w) => w[0]).join('').slice(0, 3), chair: f.chair || null, title: f.title || null }, { onSuccess: () => setF({ name: '', initials: '', chair: '', title: '' }), onError: fail }); }} className="grid grid-cols-2 gap-2 pt-2">
+        <input aria-label="Provider name" placeholder="Name (e.g. Dr. Lee)" required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} className={inputCls} />
+        <input aria-label="Chair or room" placeholder="Chair (e.g. Op 2)" required value={f.chair} onChange={(e) => setF({ ...f, chair: e.target.value })} className={inputCls} />
+        <input aria-label="Title" placeholder="Title (optional)" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} className={inputCls} />
+        <button type="submit" disabled={add.isPending} className="px-3 py-1.5 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold disabled:opacity-60">Add provider</button>
+      </form>
+      {err && <div role="alert" className="text-xs text-[#a3533a] font-semibold">{err}</div>}
+    </Card>
+  );
+};
+
 export const CleanSettings: React.FC = () => {
-  const { practice } = usePractice();
+  const { practice, role } = usePractice();
   const rooms = practice.providers.filter((p) => p.op).length;
 
   return (
@@ -76,6 +108,8 @@ export const CleanSettings: React.FC = () => {
         </Card>
 
         <ScreenLockCard />
+        <ChangePasswordCard />
+        {role === 'owner' && <ProvidersCard />}
 
         <Card title="Practice details">
           <div className="text-[13px] text-[#1e2a28]/80 pt-1 leading-relaxed">

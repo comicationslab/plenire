@@ -12,7 +12,11 @@ export interface Queryable {
 export interface Db {
   /** One transaction as the low-privilege app role, locked to ONE practice (row-level security applies). */
   tenant<T>(practiceId: string, fn: (q: Queryable) => Promise<T>): Promise<T>;
-  /** Owner-level access: migrations, seeding, login lookup. Never used to serve patient/practice data. */
+  /** Sign-in, invitations and password resets. Can look people up across practices but cannot read any patient data. */
+  auth<T>(fn: (q: Queryable) => Promise<T>): Promise<T>;
+  /** The operator console: create practices and users. Has no access to patient data (enforced by the database). */
+  platform<T>(fn: (q: Queryable) => Promise<T>): Promise<T>;
+  /** Owner-level access: migrations and seeding only. */
   admin<T>(fn: (q: Queryable) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
@@ -27,12 +31,12 @@ const SCOPE_SQL = ['SET LOCAL ROLE plenire_app', "SELECT set_config('app.practic
 /** Real PostgreSQL (AWS RDS / Aurora in production). */
 export async function pgAdapter(connectionString: string): Promise<Db> {
   const { default: pg } = await import('pg');
-  const pool = new pg.Pool({ connectionString, max: 10 });
+  const pool = new pg.Pool({ connectionString, max: Number(process.env.PG_POOL_MAX ?? 10) });
 
-  async function inTx<T>(setup: (c: import('pg').PoolClient) => Promise<void>, fn: (q: Queryable) => Promise<T>) {
+  async function inTx<T>(setup: (c: import('pg').PoolClient) => Promise<void>, fn: (q: Queryable) => Promise<T>, beginsItself = false) {
     const client = await pool.connect();
     try {
-      await client.query('BEGIN');
+      if (!beginsItself) await client.query('BEGIN');
       await setup(client);
       const out = await fn({
         query: async (sql, params) => (await client.query(sql, params as any[])).rows,
@@ -48,14 +52,17 @@ export async function pgAdapter(connectionString: string): Promise<Db> {
     }
   }
 
+  // BEGIN + role + practice scope go out as ONE round trip (the id is validated as a UUID first, so inlining it is safe).
+  const open = (c: import('pg').PoolClient, role: string, practiceId?: string) =>
+    c.query(`BEGIN; SET LOCAL ROLE ${role};${practiceId ? ` SELECT set_config('app.practice_id', '${practiceId}', true);` : ''}`);
+
   return {
     tenant: async (practiceId, fn) => {
       assertUuid(practiceId);
-      return inTx(async (c) => {
-        await c.query(SCOPE_SQL[0]);
-        await c.query(SCOPE_SQL[1], [practiceId]);
-      }, fn);
+      return inTx((c) => open(c, 'plenire_app', practiceId).then(() => {}), fn, true);
     },
+    auth: (fn) => inTx((c) => open(c, 'plenire_auth').then(() => {}), fn, true),
+    platform: (fn) => inTx((c) => open(c, 'plenire_platform').then(() => {}), fn, true),
     admin: (fn) => inTx(async () => {}, fn),
     close: () => pool.end(),
   };
@@ -81,6 +88,8 @@ export async function pgliteAdapter(dataDir?: string): Promise<Db> {
         return fn(wrap(tx));
       });
     },
+    auth: (fn) => db.transaction(async (tx) => { await tx.query('SET LOCAL ROLE plenire_auth'); return fn(wrap(tx)); }),
+    platform: (fn) => db.transaction(async (tx) => { await tx.query('SET LOCAL ROLE plenire_platform'); return fn(wrap(tx)); }),
     admin: (fn) => db.transaction(async (tx) => fn(wrap(tx))),
     close: () => db.close(),
   };
