@@ -122,8 +122,16 @@ All go through `queueMessage` (consent, STOP and health-wording checks), appear 
 | Text | Trigger | Sent |
 |---|---|---|
 | Booking confirmation | `POST /api/bookings`, `POST /api/appointments` (not walk-ins) | once per appointment |
-| Reminder | scheduled job (`queueReminders`, run by `runScheduled`) at the practice's `reminder_hours` (default 24 and 2) | once per lead time, 8 AM to 9 PM clinic time, only for `scheduled` visits |
+| Reminder | scheduled job (`queueReminders`, run by `runScheduled`) at the practice's `reminder_hours` (default 24 and 2) | once per lead time, any hour (24/7), only for `scheduled` visits |
 | Thank-you + Google review link | status set to Seen (`completed`) | once per visit; link comes from Settings (`practices.google_review_url`) |
 | Follow-up confirmation | follow-up set or changed | timing only, never the clinical label |
 
 `appointment_notifications` (unique on appointment + kind) is the sent ledger. `appointments.thanked` is true only when a thank-you was actually queued.
+
+
+## Working hours, patient edits, clinic removal
+
+- **Working hours** (`server/services/hours.ts`, table `provider_hours`): the owner sets one window per weekday for each provider/chair (Settings > Working hours). A provider with nothing stored works Monday to Saturday, 9:00 to 17:00. The calendar's time range and the booking page's dates and times follow these hours, and the server refuses bookings and scheduled visits outside them (`OUTSIDE_HOURS`, 409). Walk-ins and filling an opening from the waitlist are not blocked. One window per day: a lunch break is not modelled yet.
+- **Messaging hours:** automatic texts have no quiet window. They go out when due, 24 hours a day.
+- **Patient cards:** `GET /api/patients/:id` (any signed-in team member; logged as `PATIENT_VIEWED`). `PATCH /api/patients/:id` (owner and front desk) needs the caller's own password in the body, checked by `confirmPassword`; wrong tries share the sign-in lockout. The log records the field names that changed, never the values. Changing the phone number turns texting consent off, because consent was given for the old number.
+- **Removing a clinic:** `POST /api/platform/practices/:id/remove` with the platform admin's password. Status becomes `removed`: sessions are revoked, invitations stop working, scheduled jobs skip it. Nothing is deleted; `POST .../restore` brings it back.

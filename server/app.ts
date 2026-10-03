@@ -12,9 +12,11 @@ import { teamRoutes } from './routes/team';
 import { consoleEmail, type EmailProvider } from './services/email';
 import type { Db } from './db/adapter';
 import type { LocalTokens, Role, Verifier } from './auth/tokens';
+import { confirmPassword } from './services/auth';
 import { AppError } from './services/errors';
 import { audit, type Ctx } from './services/audit';
 import { dispatchOutbox, queueMessage, type MessageProvider } from './services/messaging';
+import { hoursByProvider, setProviderHours } from './services/hours';
 import { sendConfirmation, sendFollowUp } from './services/notifications';
 import { acceptOffer, handleReply, sendOffers, setAppointmentStatus } from './services/recovery';
 import { bookAppointment, createAppointment, createPatient } from './services/scheduling';
@@ -92,7 +94,21 @@ export function createApp(deps: AppDeps) {
   );
 
   api.get('/providers', async (c) =>
-    c.json(await run(c, (q) => q.query('SELECT id, name, initials, chair, title FROM providers WHERE active ORDER BY chair NULLS LAST, name'))));
+    c.json(await run(c, async (q) => {
+      const rows = await q.query<{ id: string }>('SELECT id, name, initials, chair, title FROM providers WHERE active ORDER BY chair NULLS LAST, name');
+      const hours = await hoursByProvider(q, rows.map((r) => r.id));
+      return rows.map((r) => ({ ...r, hours: hours.get(r.id) ?? [] }));
+    })));
+
+  // Owner-only: set the weekly working hours of one provider/chair. Bookings outside these hours are refused.
+  api.put('/providers/:id/hours', requireRole('owner'), async (c) => {
+    const id = parse(uuid, c.req.param('id'));
+    const { hours } = parse(z.object({ hours: z.array(z.object({
+      weekday: z.number().int().min(0).max(6), startMin: z.number().int().min(0).max(1425), endMin: z.number().int().min(15).max(1440),
+    })).max(7) }), await c.req.json());
+    await run(c, (q, ctx) => setProviderHours(q, ctx, id, hours));
+    return c.json({ ok: true });
+  });
 
   api.get('/appointments', async (c) => {
     const date = c.req.query('date');
@@ -197,6 +213,58 @@ export function createApp(deps: AppDeps) {
                    WHEN EXISTS (SELECT 1 FROM openings o WHERE o.filled_by_patient_id = pt.id AND o.filled_at > now() - interval '28 days') THEN 'Recovered'
                    ELSE 'Active' END AS status
          FROM patients pt ORDER BY pt.name LIMIT 500`))));
+
+  // Open one patient card. Every open is written to the activity log (who viewed which patient; ids only).
+  api.get('/patients/:id', async (c) => {
+    const id = parse(uuid, c.req.param('id'));
+    return c.json(await run(c, async (q, ctx) => {
+      const [p] = await q.query<any>(
+        `SELECT id, name, phone, email, sms_consent AS "smsConsent", sms_consent_at AS "smsConsentAt", sms_opt_out_at AS "optedOutAt",
+                new_patient AS "newPatient", walk_in AS "walkIn", notes, updated_at AS "updatedAt", created_at AS "createdAt"
+           FROM patients WHERE id = $1`, [id]);
+      if (!p) throw new AppError(404, 'PATIENT_NOT_FOUND');
+      const appointments = await q.query(
+        `SELECT a.id, a.starts_at AS "startsAt", a.duration_min AS "durationMin", a.treatment, a.status, pr.name AS "providerName", a.follow_up AS "followUp"
+           FROM appointments a JOIN providers pr ON pr.practice_id = a.practice_id AND pr.id = a.provider_id
+          WHERE a.patient_id = $1 ORDER BY a.starts_at DESC LIMIT 30`, [id]);
+      await audit(q, ctx, 'PATIENT_VIEWED', { patientId: id });
+      return { ...p, appointments };
+    }));
+  });
+
+  // Edit a patient card. Needs the signed-in person's own password (checked here, not just in the browser).
+  api.patch('/patients/:id', requireRole(...STAFF_WRITE), async (c) => {
+    const id = parse(uuid, c.req.param('id'));
+    const b = parse(z.object({
+      password: z.string().max(256).optional(),
+      name: z.string().trim().min(1).max(120).optional(),
+      phone: z.string().trim().max(30).nullish().refine((v) => !v || v.length >= 7, 'Phone number looks too short'),
+      email: z.union([z.string().trim().email().max(200), z.literal('')]).nullish(),
+      notes: z.string().max(500).nullish(),
+    }), await c.req.json());
+    await confirmPassword(db, c.get('ctx').actorId!, b.password);
+    return c.json(await run(c, async (q, ctx) => {
+      const [cur] = await q.query<{ name: string; phone: string | null; email: string | null; notes: string | null }>('SELECT name, phone, email, notes FROM patients WHERE id = $1 FOR UPDATE', [id]);
+      if (!cur) throw new AppError(404, 'PATIENT_NOT_FOUND');
+      const next = {
+        name: b.name ?? cur.name,
+        phone: b.phone === undefined ? cur.phone : (b.phone || null),
+        email: b.email === undefined ? cur.email : (b.email || null),
+        notes: b.notes === undefined ? cur.notes : (b.notes?.trim() || null),
+      };
+      const changed = (['name', 'phone', 'email', 'notes'] as const).filter((k) => next[k] !== cur[k]);
+      if (!changed.length) return { ok: true, changed: [] as string[], consentReset: false };
+      // Texting consent was given for the OLD number. A new number must opt in again (next booking or a START reply).
+      const consentReset = changed.includes('phone');
+      await q.query(
+        `UPDATE patients SET name = $2, phone = $3, email = $4, notes = $5, updated_at = now(), updated_by = $6,
+                sms_consent = CASE WHEN $7::boolean THEN false ELSE sms_consent END,
+                sms_consent_at = CASE WHEN $7::boolean THEN NULL ELSE sms_consent_at END
+          WHERE id = $1`, [id, next.name, next.phone, next.email, next.notes, ctx.actorId, consentReset]);
+      await audit(q, ctx, 'PATIENT_UPDATED', { patientId: id, fields: changed, consentReset });   // field names only, never the values
+      return { ok: true, changed: changed as string[], consentReset };
+    }));
+  });
 
   api.post('/patients', requireRole(...STAFF_WRITE), async (c) => {
     const b = parse(z.object({

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { LogOut } from 'lucide-react';
 import { ApiError } from '../api/client';
-import { useAdminAdmins, useAdminPractices, useCreatePractice, useInviteAdmin, useOwnerInvite, useUpdatePractice } from '../api/hooks';
+import { useAdminAdmins, useAdminPractices, useCreatePractice, useInviteAdmin, useOwnerInvite, useRemovePractice, useRestorePractice, useUpdatePractice } from '../api/hooks';
 import { useAuth } from '../auth/AuthContext';
 import { ErrorLine, InviteLinkBox, inputCls } from '../components/ui/Auth';
 import { ChangePasswordCard } from '../components/ui/ChangePassword';
@@ -11,6 +11,40 @@ import { QueryBoundary } from '../components/ui/QueryBoundary';
 const ZONES = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix', 'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu', 'America/Toronto', 'America/Vancouver', 'Europe/London'];
 type LinkResult = { email?: string; ownerEmail?: string; emailSent: boolean; inviteLink?: string };
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
+
+/** "Remove this clinic" confirmation: the admin must type their own password. The server checks it, so it cannot be skipped. */
+const RemoveClinicDialog: React.FC<{ clinic: { id: string; name: string }; onClose: () => void }> = ({ clinic, onClose }) => {
+  const remove = useRemovePractice();
+  const [password, setPassword] = useState('');
+  const [err, setErr] = useState('');
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr('');
+    remove.mutate({ id: clinic.id, password }, {
+      onSuccess: onClose,
+      onError: (x) => setErr(x instanceof ApiError ? x.message : 'Something went wrong'),
+    });
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1e2a28]/40 p-4" role="dialog" aria-modal="true" aria-labelledby="rm-title">
+      <form onSubmit={submit} className="w-full max-w-[420px] bg-[#f4f0e8] border border-[#1e2a28] p-5 space-y-3 text-xs">
+        <h3 id="rm-title" className="text-[18px] font-medium tracking-tight m-0">Remove {clinic.name}?</h3>
+        <p className="text-[12px] text-[#1e2a28]/80 leading-relaxed m-0">
+          Everyone at this clinic is signed out right away and can no longer sign in. Automatic texts stop. Patient records are kept, and you can restore the clinic from the Removed list.
+        </p>
+        <div>
+          <label htmlFor="rm-pw" className="block text-[11px] font-semibold mb-1">Your password</label>
+          <input id="rm-pw" type="password" autoComplete="current-password" autoFocus required value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} />
+        </div>
+        <ErrorLine message={err} />
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-3 py-1.5 border border-[#1e2a28]/30 font-semibold">Cancel</button>
+          <button type="submit" disabled={remove.isPending || !password} className="px-3 py-1.5 bg-[#a3533a] text-[#f4f0e8] font-semibold disabled:opacity-60">{remove.isPending ? 'Removing…' : 'Remove clinic'}</button>
+        </div>
+      </form>
+    </div>
+  );
+};
 
 /**
  * The operator console (for you, the Plenire owner). It manages practices and accounts only.
@@ -24,6 +58,8 @@ export const AdminConsole: React.FC = () => {
   const update = useUpdatePractice();
   const reinvite = useOwnerInvite();
   const inviteAdmin = useInviteAdmin();
+  const restore = useRestorePractice();
+  const [removing, setRemoving] = useState<{ id: string; name: string } | null>(null);
 
   const blank = { name: '', phone: '', address: '', timezone: 'America/Chicago', ownerName: '', ownerEmail: '', staffLimit: 25 };
   const [form, setForm] = useState(blank);
@@ -32,7 +68,9 @@ export const AdminConsole: React.FC = () => {
   const [error, setError] = useState('');
   const fail = (e: unknown) => setError(e instanceof ApiError ? e.message : 'Something went wrong');
 
-  const list = practices.data ?? [];
+  const all = practices.data ?? [];
+  const list = all.filter((p) => p.status !== 'removed');
+  const removed = all.filter((p) => p.status === 'removed');
   const set = (k: keyof typeof blank) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: k === 'staffLimit' ? Number(e.target.value) : e.target.value });
 
   return (
@@ -49,7 +87,7 @@ export const AdminConsole: React.FC = () => {
       </header>
 
       <main className="p-6 md:p-9 max-w-[1180px] mx-auto space-y-6">
-        <PageHead eyebrow="Operator" title="Clinics on Plenire" blurb="Add a clinic, invite its owner, and pause access if needed. You cannot see any clinic's patient data from here." />
+        <PageHead eyebrow="Operator" title="Clinics on Plenire" blurb="Add a clinic, invite its owner, pause access, or remove a clinic. You cannot see any clinic's patient data from here." />
         <ErrorLine message={error} />
 
         <QueryBoundary queries={[practices, admins]}>
@@ -113,6 +151,7 @@ export const AdminConsole: React.FC = () => {
                           }}
                           className="px-2.5 py-1 border border-[#1e2a28]/30 font-semibold"
                         >{p.status === 'active' ? 'Pause' : 'Reactivate'}</button>
+                        <button onClick={() => setRemoving({ id: p.id, name: p.name })} className="px-2.5 py-1 border border-[#a3533a]/60 text-[#a3533a] font-semibold">Remove</button>
                       </td>
                     </tr>
                   ))}
@@ -120,6 +159,19 @@ export const AdminConsole: React.FC = () => {
               </table>
             </div>
           </Panel>
+
+          {removed.length > 0 && (
+            <Panel title="Removed clinics" note={`${removed.length} hidden`}>
+              <ul className="m-0 p-0 list-none divide-y divide-[#1e2a28]/10">
+                {removed.map((p) => (
+                  <li key={p.id} className="py-2 flex items-center justify-between text-[12px]">
+                    <span><b>{p.name}</b> <span className="text-[#1e2a28]/70">· {p.ownerEmail ?? 'no owner'}</span></span>
+                    <button onClick={() => restore.mutate(p.id, { onError: fail })} disabled={restore.isPending} className="px-2.5 py-1 border border-[#1e2a28]/30 font-semibold">Restore</button>
+                  </li>
+                ))}
+              </ul>
+            </Panel>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Panel title="Platform admins" note="Can manage clinics, never patient data">
@@ -138,6 +190,7 @@ export const AdminConsole: React.FC = () => {
           </div>
         </QueryBoundary>
       </main>
+      {removing && <RemoveClinicDialog clinic={removing} onClose={() => setRemoving(null)} />}
     </div>
   );
 };

@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { useHIPAA } from '../../context/HIPAAContext';
 import { usePractice } from '../../context/PracticeContext';
 import { ApiError } from '../../api/client';
-import { useAddProvider, useMe, useProviders, useSavePracticeSettings, useUpdateProvider } from '../../api/hooks';
+import { useAddProvider, useMe, useProviders, useSavePracticeSettings, useSetProviderHours, useUpdateProvider } from '../../api/hooks';
+import { DEFAULT_HOURS, fmtMin, WEEKDAYS, type HoursWindow } from '../../lib/hours';
 import { ChangePasswordCard } from '../ui/ChangePassword';
 import { PageHead } from '../ui/Metric';
 
@@ -84,7 +85,7 @@ const ProvidersCard: React.FC = () => {
   );
 };
 
-const REMINDER_CHOICES = [48, 24, 2];
+const REMINDER_CHOICES = [48, 24, 12, 4, 2, 1];
 
 /** Owner-only: the Google review link in thank-you texts, and when appointment reminders go out. */
 const PatientTextsCard: React.FC = () => {
@@ -123,10 +124,78 @@ const PatientTextsCard: React.FC = () => {
             </label>
           ))}
         </div>
-        <p className="text-[11px] text-[#1e2a28]/70 m-0">Reminders are only sent between 8:00 AM and 9:00 PM clinic time.</p>
+        <p className="text-[11px] text-[#1e2a28]/70 m-0">Choose up to 3. Reminders go out at any hour: with "2 hours before", a 9:00 AM visit is texted at 7:00 AM.</p>
         <button type="submit" disabled={save.isPending} className="px-3 py-1.5 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold disabled:opacity-60">Save</button>
         {msg && <div role={msg.ok ? 'status' : 'alert'} className={`text-xs font-semibold ${msg.ok ? 'text-emerald-800' : 'text-[#a3533a]'}`}>{msg.text}</div>}
       </form>
+    </Card>
+  );
+};
+
+const TIME_OPTIONS = Array.from({ length: 97 }, (_, i) => i * 15);
+const selectCls = 'h-[30px] px-1.5 bg-white border border-[#1e2a28]/30 text-xs tabular-nums disabled:opacity-40';
+
+/** One provider's weekly hours. Unchecked days are days off. */
+const HoursEditor: React.FC<{ id: string; name: string; chair: string | null; initial: HoursWindow[] }> = ({ id, name, chair, initial }) => {
+  const save = useSetProviderHours();
+  const start: HoursWindow[] = initial.length ? initial : DEFAULT_HOURS;
+  const [days, setDays] = useState(() => WEEKDAYS.map((_, wd) => {
+    const w = start.find((x) => x.weekday === wd);
+    return { on: !!w, startMin: w?.startMin ?? 540, endMin: w?.endMin ?? 1020 };
+  }));
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const patch = (i: number, p: Partial<(typeof days)[number]>) => { setMsg(null); setDays(days.map((d, j) => (j === i ? { ...d, ...p } : d))); };
+  const firstOn = days.findIndex((d) => d.on);
+  const copyToAll = () => { if (firstOn < 0) return; const { startMin, endMin } = days[firstOn]; setMsg(null); setDays(days.map((d) => (d.on ? { ...d, startMin, endMin } : d))); };
+  const bad = days.some((d) => d.on && d.endMin <= d.startMin);
+  const submit = () => {
+    setMsg(null);
+    if (!days.some((d) => d.on)) return setMsg({ ok: false, text: 'Choose at least one working day.' });
+    if (bad) return setMsg({ ok: false, text: 'Closing time must be after opening time.' });
+    save.mutate({ id, hours: days.flatMap((d, weekday) => (d.on ? [{ weekday, startMin: d.startMin, endMin: d.endMin }] : [])) }, {
+      onSuccess: () => setMsg({ ok: true, text: 'Saved.' }),
+      onError: (e) => setMsg({ ok: false, text: e instanceof ApiError ? e.message : 'Could not save' }),
+    });
+  };
+  return (
+    <details className="border border-[#1e2a28]/15 bg-white/50">
+      <summary className="cursor-pointer px-3 py-2 text-[12px] font-semibold">{name} <span className="font-normal text-[#1e2a28]/70">· {chair ?? 'no chair'}</span></summary>
+      <div className="px-3 pb-3 space-y-1.5">
+        {days.map((d, i) => (
+          <div key={WEEKDAYS[i]} className="grid grid-cols-[96px_1fr_1fr] items-center gap-2 text-[12px]">
+            <label className="flex items-center gap-1.5"><input type="checkbox" checked={d.on} onChange={(e) => patch(i, { on: e.target.checked })} className="accent-[#1e2a28]" />{WEEKDAYS[i].slice(0, 3)}</label>
+            <select aria-label={`${WEEKDAYS[i]} opens`} disabled={!d.on} value={d.startMin} onChange={(e) => patch(i, { startMin: Number(e.target.value) })} className={selectCls}>
+              {TIME_OPTIONS.filter((m) => m < 1440).map((m) => <option key={m} value={m}>{fmtMin(m)}</option>)}
+            </select>
+            <select aria-label={`${WEEKDAYS[i]} closes`} disabled={!d.on} value={d.endMin} onChange={(e) => patch(i, { endMin: Number(e.target.value) })} className={selectCls}>
+              {TIME_OPTIONS.filter((m) => m > 0).map((m) => <option key={m} value={m}>{m === 1440 ? '12 AM (midnight)' : fmtMin(m)}</option>)}
+            </select>
+          </div>
+        ))}
+        <div className="flex items-center gap-3 pt-1">
+          <button type="button" onClick={submit} disabled={save.isPending} className="px-3 py-1.5 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold disabled:opacity-60">Save hours</button>
+          <button type="button" onClick={copyToAll} className="text-[11px] underline font-semibold">Use the first open day's hours for all open days</button>
+        </div>
+        {msg && <div role={msg.ok ? 'status' : 'alert'} className={`text-xs font-semibold ${msg.ok ? 'text-emerald-800' : 'text-[#a3533a]'}`}>{msg.text}</div>}
+      </div>
+    </details>
+  );
+};
+
+/** Owner-only: working hours for each provider/chair. They set the calendar's time range and the times patients can book. */
+const ProviderHoursCard: React.FC = () => {
+  const providers = useProviders();
+  return (
+    <Card title="Working hours">
+      <p className="text-[12px] text-[#1e2a28]/70 leading-relaxed m-0">
+        Set the days and hours each provider works. The calendar and the booking page follow these hours, and nobody can book outside them. Until you set hours, a provider works Monday to Saturday, 9 AM to 5 PM.
+      </p>
+      <div className="space-y-2 pt-1">
+        {(providers.data ?? []).map((p) => (
+          <HoursEditor key={`${p.id}:${JSON.stringify(p.hours)}`} id={p.id} name={p.name} chair={p.chair} initial={p.hours} />
+        ))}
+        {providers.data?.length === 0 && <p className="text-[12px] text-[#1e2a28]/70 m-0">Add a provider first.</p>}
+      </div>
     </Card>
   );
 };
@@ -142,9 +211,9 @@ export const CleanSettings: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card title="Messaging hours">
           <p className="text-[12px] text-[#1e2a28]/70 leading-relaxed m-0">
-            Plan: messages go out between 8:00 AM and 9:00 PM in the patient’s local time.
+            Automatic texts (confirmations, reminders, follow-ups, thank-yous) go out the moment they are due, 24 hours a day. There is no quiet window.
           </p>
-          <div className="pt-2"><Pill>Applies once text messaging is connected</Pill></div>
+          <div className="pt-2"><Pill>24 hours</Pill></div>
         </Card>
 
         <Card title="Patient consent & privacy">
@@ -158,6 +227,7 @@ export const CleanSettings: React.FC = () => {
         <ChangePasswordCard />
         {role === 'owner' && <PatientTextsCard />}
         {role === 'owner' && <ProvidersCard />}
+        {role === 'owner' && <ProviderHoursCard />}
 
         <Card title="Practice details">
           <div className="text-[13px] text-[#1e2a28]/80 pt-1 leading-relaxed">

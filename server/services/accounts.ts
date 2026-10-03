@@ -121,11 +121,33 @@ export const listPractices = (db: Db) =>
 
 export async function updatePractice(db: Db, actorId: string, id: string, c: { status?: 'active' | 'suspended'; plan?: string; staffLimit?: number }) {
   await db.platform(async (q) => {
-    const [r] = await q.query('UPDATE practices SET status = COALESCE($2, status), plan = COALESCE($3, plan), staff_limit = COALESCE($4, staff_limit) WHERE id = $1 RETURNING id',
+    const [r] = await q.query("UPDATE practices SET status = COALESCE($2, status), plan = COALESCE($3, plan), staff_limit = COALESCE($4, staff_limit) WHERE id = $1 AND status <> 'removed' RETURNING id",
       [id, c.status ?? null, c.plan ?? null, c.staffLimit ?? null]);
     if (!r) throw new AppError(404, 'PRACTICE_NOT_FOUND');
     if (c.status === 'suspended') await q.query('UPDATE sessions SET revoked_at = now() WHERE practice_id = $1 AND revoked_at IS NULL', [id]);
     await platformAudit(q, actorId, 'PRACTICE_UPDATED', { practiceId: id, ...c });
+  });
+}
+
+/**
+ * Removes a clinic from the console: everyone is signed out, no one can sign in, pending invitations stop working and the scheduled
+ * jobs skip it. Nothing is deleted (patient records and the audit log are kept), so it can be restored.
+ */
+export async function removePractice(db: Db, actorId: string, id: string) {
+  await db.platform(async (q) => {
+    const [r] = await q.query<{ status: string }>("UPDATE practices SET status = 'removed' WHERE id = $1 AND status <> 'removed' RETURNING status", [id]);
+    if (!r) throw new AppError(404, 'PRACTICE_NOT_FOUND', 'Clinic not found or already removed');
+    await q.query('UPDATE sessions SET revoked_at = now() WHERE practice_id = $1 AND revoked_at IS NULL', [id]);
+    await q.query('UPDATE invitations SET used_at = now() WHERE practice_id = $1 AND used_at IS NULL', [id]);
+    await platformAudit(q, actorId, 'PRACTICE_REMOVED', { practiceId: id });
+  });
+}
+
+export async function restorePractice(db: Db, actorId: string, id: string) {
+  await db.platform(async (q) => {
+    const [r] = await q.query("UPDATE practices SET status = 'active' WHERE id = $1 AND status = 'removed' RETURNING id", [id]);
+    if (!r) throw new AppError(404, 'PRACTICE_NOT_FOUND', 'That clinic is not in the removed list');
+    await platformAudit(q, actorId, 'PRACTICE_RESTORED', { practiceId: id });
   });
 }
 

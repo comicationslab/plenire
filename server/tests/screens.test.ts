@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 import { createApp } from '../app';
 import { localTokens, type LocalTokens } from '../auth/tokens';
 import type { Db } from '../db/adapter';
-import { seedDemo, seedPractice, type SeededPractice } from '../db/seed';
+import { DEMO_PASSWORD, seedDemo, seedPractice, type SeededPractice } from '../db/seed';
 import type { MessageProvider } from '../services/messaging';
 import { queueReminders } from '../services/notifications';
 import { backend, freshDb } from './helpers';
@@ -27,7 +27,11 @@ describe(`endpoints behind the screens (${backend()})`, () => {
     fd = await tok(A, 'tracy@lakeside.test');
     owner = await tok(A, 'mensah@lakeside.test');
     bOwner = await tok(B, 'b@b.test');
+    // Open every provider 6:00 to 20:00, every day, so the other tests do not depend on which weekday they run on.
+    for (const p of (await call('GET', '/api/providers', owner)).json) await openAllWeek(p.id);
   });
+  const openAllWeek = (providerId: string) =>
+    call('PUT', `/api/providers/${providerId}/hours`, owner, { hours: [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startMin: 360, endMin: 1200 })) });
   after(() => db.close());
 
   it('demo history gives the dashboards a real rate (34 of 52)', async () => {
@@ -202,7 +206,7 @@ describe(`endpoints behind the screens (${backend()})`, () => {
       await insertAppt(optedOut, prov, 23, 2);
       await insertAppt(await mk('Stu Stale', true), prov, 10, 2);   // 24h reminder window passed hours ago → no stale reminder
 
-      const run1 = await queueReminders(db, A.practiceId, { quietHours: false });
+      const run1 = await queueReminders(db, A.practiceId);
       assert.equal(run1.queued, 1);
       const t = await thread(due);
       assert.equal(t.length, 1);
@@ -210,12 +214,123 @@ describe(`endpoints behind the screens (${backend()})`, () => {
       for (const p of [lateBooked, far, done, optedOut]) assert.equal((await thread(p)).length, 0);
       assert.equal(run1.queued, 1, 'the stale 10h visit got nothing either');
 
-      assert.equal((await queueReminders(db, A.practiceId, { quietHours: false })).queued, 0, 'running again never repeats a reminder');
+      assert.equal((await queueReminders(db, A.practiceId)).queued, 0, 'running again never repeats a reminder');
       const ledger = await db.admin((q) => q.query<any>('SELECT kind FROM appointment_notifications WHERE appointment_id = $1', [a]));
       assert.deepEqual(ledger.map((r: any) => r.kind), ['reminder_24h']);
 
       await db.admin((q) => q.query("UPDATE appointments SET starts_at = now() + interval '1 hour 30 minutes' WHERE id = $1", [a]));
-      assert.equal((await queueReminders(db, A.practiceId, { quietHours: false })).queued, 1, 'the 2-hour reminder is separate from the 24-hour one');
+      assert.equal((await queueReminders(db, A.practiceId)).queued, 1, 'the 2-hour reminder is separate from the 24-hour one');
+    });
+  });
+
+  describe('working hours per provider', () => {
+    const nextMonday = (plusDays = 0) => {
+      const d = new Date(); d.setUTCDate(d.getUTCDate() + ((8 - d.getUTCDay()) % 7 || 7) + plusDays);
+      return d.toISOString().slice(0, 10);
+    };
+    const book = (date: string, time: string, providerId: string | null, last: string) =>
+      call('POST', '/api/bookings', fd, { firstName: 'Hana', lastName: last, phone: '+15555552' + String(Math.floor(100 + Math.random() * 899)), newPatient: true, smsConsent: false, date, time, durationMin: 30, treatment: 'Cleaning & Checkup', providerId });
+
+    it('the owner sets hours; bookings outside them are refused, inside them work; only owners can change hours', async () => {
+      const prov = (await call('GET', '/api/providers', owner)).json.at(-1).id as string;
+      const mon = nextMonday(7);
+      assert.equal((await call('PUT', `/api/providers/${prov}/hours`, fd, { hours: [{ weekday: 1, startMin: 600, endMin: 720 }] })).status, 403, 'front desk cannot');
+      assert.equal((await call('PUT', `/api/providers/${prov}/hours`, owner, { hours: [{ weekday: 1, startMin: 600, endMin: 720 }] })).status, 200);
+      const listed = (await call('GET', '/api/providers', fd)).json.find((p: any) => p.id === prov);
+      assert.deepEqual(listed.hours, [{ weekday: 1, startMin: 600, endMin: 720 }]);
+
+      assert.equal((await book(mon, '09:30', prov, 'Early')).json.error.code, 'OUTSIDE_HOURS');
+      assert.equal((await book(mon, '11:45', prov, 'Late')).json.error.code, 'OUTSIDE_HOURS', 'a visit that would run past closing is refused');
+      assert.equal((await book(nextMonday(8), '10:30', prov, 'DayOff')).json.error.code, 'OUTSIDE_HOURS', 'Tuesday is a day off');
+      assert.equal((await book(mon, '10:00', prov, 'Inside')).status, 201);
+      assert.equal((await book(mon, '11:30', prov, 'LastSlot')).status, 201, 'ends exactly at closing');
+
+      const patient = (await call('POST', '/api/patients', fd, { name: 'Walk Inn', phone: '+15555552999' })).json.patientId;
+      const at = (hh: string) => `${mon}T${hh}:00-05:00`;
+      const staffSched = await call('POST', '/api/appointments', fd, { patientId: patient, providerId: prov, startsAt: at('08:00'), durationMin: 30, treatment: 'Exam' });
+      assert.equal(staffSched.json.error.code, 'OUTSIDE_HOURS', 'scheduled visits follow the hours too');
+      const walkIn = await call('POST', '/api/appointments', fd, { patientId: patient, providerId: prov, startsAt: at('08:00'), durationMin: 30, treatment: 'Emergency exam', walkIn: true });
+      assert.equal(walkIn.status, 201, 'a walk-in is already in the chair');
+
+      assert.equal((await call('PUT', `/api/providers/${prov}/hours`, owner, { hours: [{ weekday: 1, startMin: 720, endMin: 720 }] })).status, 422, 'closing must be after opening');
+      assert.equal((await call('PUT', `/api/providers/${prov}/hours`, owner, { hours: [] })).status, 422, 'at least one working day');
+      assert.equal((await call('PUT', `/api/providers/${prov}/hours`, owner, { hours: [{ weekday: 1, startMin: 601, endMin: 720 }] })).status, 422, '15-minute steps');
+      assert.equal((await call('PUT', `/api/providers/${prov}/hours`, bOwner, { hours: [{ weekday: 1, startMin: 600, endMin: 720 }] })).status, 404, 'another practice cannot touch it');
+      await openAllWeek(prov);
+    });
+
+    it('"any provider" only picks someone who is working; a provider with no hours set uses Monday to Saturday 9 to 5', async () => {
+      const provs = (await call('GET', '/api/providers', owner)).json.filter((p: any) => p.chair) as { id: string }[];
+      const mon = nextMonday(14);
+      for (const p of provs.slice(1)) await call('PUT', `/api/providers/${p.id}/hours`, owner, { hours: [{ weekday: 3, startMin: 540, endMin: 600 }] }); // only Wednesdays 9-10
+      const r = await book(mon, '14:00', null, 'AnyOne');
+      assert.equal(r.status, 201);
+      const picked = (await db.admin((q) => q.query<any>('SELECT provider_id FROM appointments WHERE id = $1', [r.json.appointmentId])))[0].provider_id;
+      assert.equal(picked, provs[0].id, 'the only chair open on Monday afternoon');
+      for (const p of provs.slice(1)) assert.ok((await book(mon, '14:30', p.id, 'Nope')).json.error.code === 'OUTSIDE_HOURS');
+      for (const p of provs) await openAllWeek(p.id);
+
+      await db.admin((q) => q.query('DELETE FROM provider_hours WHERE provider_id = $1', [provs[0].id]));
+      const def = (await call('GET', '/api/providers', owner)).json.find((p: any) => p.id === provs[0].id);
+      assert.deepEqual(def.hours, [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startMin: 540, endMin: 1020 })), 'nothing stored: the API shows the default so Settings can display it');
+      assert.equal((await book(mon, '08:30', provs[0].id, 'DefaultEarly')).json.error.code, 'OUTSIDE_HOURS');
+      assert.equal((await book(mon, '16:30', provs[0].id, 'DefaultOk')).status, 201);
+      await openAllWeek(provs[0].id);
+    });
+  });
+
+  describe('patient cards', () => {
+    const pw = DEMO_PASSWORD;
+    let pid: string;
+    it('anyone on the team can open a card (and it is logged); editing needs the person\'s own password', async () => {
+      pid = (await call('POST', '/api/patients', fd, { name: 'Pia Card', phone: '+15555553001', email: 'pia@example.com', smsConsent: true, notes: 'Prefers mornings' })).json.patientId;
+      const card = await call('GET', `/api/patients/${pid}`, fd);
+      assert.equal(card.status, 200);
+      assert.equal(card.json.name, 'Pia Card');
+      assert.ok(Array.isArray(card.json.appointments));
+      const viewed = await db.admin((q) => q.query<any>("SELECT details FROM audit_log WHERE action = 'PATIENT_VIEWED' AND details->>'patientId' = $1", [pid]));
+      assert.equal(viewed.length, 1);
+      assert.equal((await call('GET', `/api/patients/${pid}`, bOwner)).status, 404, 'other practices cannot open it');
+
+      const edit = (tok: string, body: any) => call('PATCH', `/api/patients/${pid}`, tok, body);
+      assert.equal((await edit(fd, { name: 'Pia Changed' })).json.error.code, 'PASSWORD_REQUIRED');
+      assert.equal((await edit(fd, { name: 'Pia Changed', password: 'wrong-password-123' })).json.error.code, 'WRONG_PASSWORD');
+      assert.equal((await call('GET', `/api/patients/${pid}`, fd)).json.name, 'Pia Card', 'refused edits changed nothing');
+      const ok = await edit(owner, { name: 'Pia Changed', notes: 'Prefers afternoons', password: pw });
+      assert.equal(ok.status, 200, 'owner with own password');
+      assert.deepEqual([ok.json.changed, ok.json.consentReset], [['name', 'notes'], false]);
+      const after = (await call('GET', `/api/patients/${pid}`, fd)).json;
+      assert.deepEqual([after.name, after.notes, after.smsConsent], ['Pia Changed', 'Prefers afternoons', true]);
+      assert.ok(after.updatedAt);
+    });
+
+    it('the activity log records which fields changed, never the values; no-op saves are not logged', async () => {
+      const rows = await db.admin((q) => q.query<any>("SELECT details FROM audit_log WHERE action = 'PATIENT_UPDATED' AND details->>'patientId' = $1", [pid]));
+      assert.equal(rows.length, 1);
+      assert.deepEqual(rows[0].details.fields, ['name', 'notes']);
+      assert.doesNotMatch(JSON.stringify(rows[0].details), /Pia|afternoons/);
+      const same = await call('PATCH', `/api/patients/${pid}`, owner, { name: 'Pia Changed', password: pw });
+      assert.deepEqual(same.json.changed, []);
+      assert.equal((await db.admin((q) => q.query<any>("SELECT 1 FROM audit_log WHERE action = 'PATIENT_UPDATED' AND details->>'patientId' = $1", [pid]))).length, 1);
+    });
+
+    it('a new phone number turns texting off until the patient agrees again; email can be cleared', async () => {
+      const r = await call('PATCH', `/api/patients/${pid}`, owner, { phone: '+15555553002', email: '', password: pw });
+      assert.deepEqual([r.json.changed, r.json.consentReset], [['phone', 'email'], true]);
+      const c = (await call('GET', `/api/patients/${pid}`, owner)).json;
+      assert.deepEqual([c.phone, c.email, c.smsConsent, c.smsConsentAt], ['+15555553002', null, false, null]);
+      assert.equal((await call('POST', `/api/patients/${pid}/messages`, owner, { body: 'Hello there' })).status, 422, 'cannot text without consent');
+    });
+
+    it('five wrong passwords lock confirmations for a while (a borrowed signed-in screen cannot guess the password)', async () => {
+      // (this person already got one wrong password earlier in these tests; the count is shared with sign-in)
+      const codes: string[] = [];
+      for (let i = 0; i < 5; i++) codes.push((await call('PATCH', `/api/patients/${pid}`, fd, { name: 'X', password: `wrong-guess-${i}-xyz` })).json.error.code);
+      assert.equal(codes.at(-1), 'LOCKED');
+      assert.ok(codes.slice(0, -1).every((c) => c === 'WRONG_PASSWORD'));
+      const locked = await call('PATCH', `/api/patients/${pid}`, fd, { name: 'X', password: pw });
+      assert.equal(locked.status, 429, 'even the right password is refused while locked');
+      assert.equal((await call('GET', `/api/patients/${pid}`, fd)).json.name, 'Pia Changed');
     });
   });
 

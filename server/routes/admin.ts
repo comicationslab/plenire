@@ -3,8 +3,8 @@ import { z } from 'zod';
 import type { Db } from '../db/adapter';
 import { authenticate, platformAdminsOnly, type Env } from '../middleware/auth';
 import type { Verifier } from '../auth/tokens';
-import { changePassword } from '../services/auth';
-import { inviteAdmin, inviteHours, listAdmins, listPractices, provisionPractice, reinviteOwner, updatePractice } from '../services/accounts';
+import { changePassword, confirmPassword } from '../services/auth';
+import { inviteAdmin, inviteHours, listAdmins, listPractices, provisionPractice, reinviteOwner, removePractice, restorePractice, updatePractice } from '../services/accounts';
 import { adminInviteEmail, inviteEmail, type EmailProvider } from '../services/email';
 import { AppError } from '../services/errors';
 import { emailField, inviteLink } from './auth';
@@ -38,6 +38,19 @@ export function adminRoutes(d: AdminDeps) {
   r.patch('/practices/:id', async (c) => {
     const b = parse(z.object({ status: z.enum(['active', 'suspended']).optional(), plan: z.string().trim().max(40).optional(), staffLimit: z.number().int().min(1).max(500).optional() }), await c.req.json());
     await updatePractice(d.db, c.get('claims').staffId, parse(uuid, c.req.param('id')), b);
+    return c.json({ ok: true });
+  });
+
+  // Removing a clinic needs the signed-in admin's own password, checked here on the server.
+  r.post('/practices/:id/remove', async (c) => {
+    const b = parse(z.object({ password: z.string().max(256).optional() }), await c.req.json().catch(() => ({})));
+    await confirmPassword(d.db, c.get('claims').staffId, b.password);
+    await removePractice(d.db, c.get('claims').staffId, parse(uuid, c.req.param('id')));
+    return c.json({ ok: true });
+  });
+
+  r.post('/practices/:id/restore', async (c) => {
+    await restorePractice(d.db, c.get('claims').staffId, parse(uuid, c.req.param('id')));
     return c.json({ ok: true });
   });
 

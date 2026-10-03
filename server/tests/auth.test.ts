@@ -243,6 +243,31 @@ describe(`accounts, sign-in and the SaaS operator console (${backend()})`, () =>
     assert.equal((await call('POST', '/api/platform/practices', { token: admin.accessToken, body: { name: 'Bad TZ', phone: '5550100', timezone: 'Mars/Olympus', ownerName: 'X', ownerEmail: 'x@y.test' } })).status, 422);
   });
 
+  it('removing a clinic needs the admin\'s password; it signs everyone out, keeps the data, and can be restored', async () => {
+    const admin = (await login('admin@plenire.test')).json.accessToken;
+    const ownerLogin = (await login('owner@other.test')).json;
+    assert.ok(ownerLogin.accessToken, 'the clinic owner can sign in before removal');
+    const remove = (body?: unknown) => call('POST', `/api/platform/practices/${B.practiceId}/remove`, { token: admin, body });
+
+    assert.equal((await remove({})).json.error.code, 'PASSWORD_REQUIRED');
+    assert.equal((await remove({ password: 'not-the-password-1' })).json.error.code, 'WRONG_PASSWORD');
+    assert.equal((await call('POST', `/api/platform/practices/${B.practiceId}/remove`, { token: ownerLogin.accessToken, body: { password: DEMO_PASSWORD } })).status, 403, 'a clinic owner cannot remove clinics');
+    assert.equal((await sql<any[]>((q) => q.query('SELECT status FROM practices WHERE id = $1', [B.practiceId])))[0].status, 'active', 'nothing happened without the right password');
+
+    assert.equal((await remove({ password: DEMO_PASSWORD })).status, 200);
+    assert.equal((await sql<any[]>((q) => q.query('SELECT status FROM practices WHERE id = $1', [B.practiceId])))[0].status, 'removed');
+    assert.equal((await login('owner@other.test')).status, 403, 'nobody can sign in to a removed clinic');
+    assert.equal((await sql<any[]>((q) => q.query('SELECT count(*)::int AS n FROM sessions WHERE practice_id = $1 AND revoked_at IS NULL', [B.practiceId])))[0].n, 0, 'everyone signed out');
+    assert.equal((await remove({ password: DEMO_PASSWORD })).status, 404, 'already removed');
+    assert.equal((await call('PATCH', `/api/platform/practices/${B.practiceId}`, { token: admin, body: { status: 'active' } })).status, 404, 'a removed clinic is restored, not un-paused');
+    const row = (await call('GET', '/api/platform/practices', { token: admin })).json.find((p: any) => p.id === B.practiceId);
+    assert.equal(row.status, 'removed', 'still listed (as removed) so it can be restored');
+    assert.equal((await sql<any[]>((q) => q.query("SELECT count(*)::int AS n FROM platform_audit WHERE action = 'PRACTICE_REMOVED'")))[0].n, 1);
+
+    assert.equal((await call('POST', `/api/platform/practices/${B.practiceId}/restore`, { token: admin, body: {} })).status, 200);
+    assert.ok((await login('owner@other.test')).json.accessToken, 'the owner can sign in again after restore');
+  });
+
   it('only platform admins reach /admin; platform admins cannot open practice data', async () => {
     const owner = (await login('owner@other.test')).json.accessToken;
     const admin = (await login('admin@plenire.test')).json.accessToken;

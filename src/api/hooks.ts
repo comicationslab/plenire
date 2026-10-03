@@ -30,6 +30,8 @@ export const useProviders = () => useQuery(providersQuery);
 export const useAppointments = () => useQuery(appointmentsQuery);
 export const useOpenings = () => useQuery(openingsQuery);
 export const usePatients = () => useQuery(patientsQuery);
+export const usePatient = (id: string | null) =>
+  useQuery({ queryKey: ['patient', id], queryFn: () => api('GET', `/api/patients/${id}`, S.patientDetailSchema), enabled: !!id, staleTime: 0, gcTime: 0, refetchOnWindowFocus: false });   // every fetch is logged as "patient viewed", so no background refetching
 export const usePatientSummary = () => useQuery(patientSummaryQuery);
 export const useWaitlist = () => useQuery(waitlistQuery);
 export const useConversations = () => useQuery(conversationsQuery);
@@ -102,5 +104,14 @@ export interface NewPracticeInput { name: string; phone: string; address: string
 export const useCreatePractice = () => useWrite((v: NewPracticeInput) => api('POST', '/api/platform/practices', S.createPracticeResultSchema, v));
 export const useUpdatePractice = () =>
   useWrite((v: { id: string; status?: 'active' | 'suspended'; staffLimit?: number }) => api('PATCH', `/api/platform/practices/${v.id}`, S.okSchema, { status: v.status, staffLimit: v.staffLimit }));
+export const useRemovePractice = () => useWrite((v: { id: string; password: string }) => api('POST', `/api/platform/practices/${v.id}/remove`, S.okSchema, { password: v.password }));
+export const useRestorePractice = () => useWrite((id: string) => api('POST', `/api/platform/practices/${id}/restore`, S.okSchema, {}));
+export const useUpdatePatient = () =>
+  useWrite((v: { id: string; password: string; name?: string; phone?: string | null; email?: string | null; notes?: string | null }) => {
+    const { id, ...body } = v;
+    return api('PATCH', `/api/patients/${id}`, S.patientUpdateResultSchema, body);
+  });
+export const useSetProviderHours = () =>
+  useWrite((v: { id: string; hours: { weekday: number; startMin: number; endMin: number }[] }) => api('PUT', `/api/providers/${v.id}/hours`, S.okSchema, { hours: v.hours }));
 export const useOwnerInvite = () => useWrite((v: { id: string; email?: string; name?: string }) => api('POST', `/api/platform/practices/${v.id}/owner-invite`, S.createPracticeResultSchema, { email: v.email, name: v.name }));
 export const useInviteAdmin = () => useWrite((v: { email: string; name: string }) => api('POST', '/api/platform/admins', S.createPracticeResultSchema, v));

@@ -92,6 +92,8 @@ export interface PracticeInfo {
     initials: string;
     op?: string;
     fast?: boolean;
+    /** Weekly working windows (weekday 0 = Sunday, minutes from midnight). Empty/undefined = not loaded. */
+    hours?: { weekday: number; startMin: number; endMin: number }[];
   }[];
   visitTypes: {
     id: string;

@@ -15,7 +15,7 @@ export interface Principal {
   name: string;
   email: string;
   status: 'invited' | 'active' | 'disabled';
-  practiceStatus: 'active' | 'suspended' | null;
+  practiceStatus: 'active' | 'suspended' | 'removed' | null;
 }
 
 export interface AuthSettings { sessionHours: number; idleMinutes: number }
@@ -226,6 +226,28 @@ export async function startPasswordReset(db: Db, email: string): Promise<{ princ
     const token = await createInvitation(q, { kind: 'password_reset', principalId: principal.id, principalType: principal.type, practiceId: principal.practiceId, email: principal.email, createdBy: null, hours: 1 });
     return { principal, token };
   });
+}
+
+/**
+ * "Type your password to confirm" for risky actions (editing a patient, removing a clinic). Checked on the SERVER, so a hidden button or a
+ * tampered browser cannot skip it. Wrong tries share the sign-in lockout (5 wrong = 15 minutes), so a borrowed, already signed-in screen
+ * cannot be used to guess the password.
+ */
+export async function confirmPassword(db: Db, principalId: string, password: unknown): Promise<void> {
+  if (typeof password !== 'string' || !password) throw new AppError(403, 'PASSWORD_REQUIRED', 'Enter your password to confirm this change');
+  const [cred] = await db.auth((q) => q.query<{ password_hash: string; locked: boolean }>(
+    'SELECT password_hash, (locked_until IS NOT NULL AND locked_until > now()) AS locked FROM credentials WHERE principal_id = $1', [principalId]));
+  if (!cred) throw new AppError(403, 'WRONG_PASSWORD', 'Password is not correct');
+  if (cred.locked) throw new AppError(429, 'LOCKED', 'Too many wrong passwords. Try again in 15 minutes.');
+  if (!(await verifyPassword(password, cred.password_hash))) {
+    await db.auth((q) => q.query(
+      `UPDATE credentials SET
+         locked_until = CASE WHEN failed_attempts + 1 >= $2 THEN now() + make_interval(mins => $3) ELSE locked_until END,
+         failed_attempts = CASE WHEN failed_attempts + 1 >= $2 THEN 0 ELSE failed_attempts + 1 END
+       WHERE principal_id = $1`, [principalId, MAX_FAILED, LOCK_MINUTES]));
+    throw new AppError(403, 'WRONG_PASSWORD', 'Password is not correct');
+  }
+  await db.auth((q) => q.query('UPDATE credentials SET failed_attempts = 0 WHERE principal_id = $1', [principalId]));
 }
 
 export async function changePassword(db: Db, who: { id: string; type: PrincipalType; email: string; name: string }, sid: string | undefined, current: string, next: string) {

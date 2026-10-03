@@ -1,4 +1,5 @@
 import type { Queryable } from '../db/adapter';
+import { assertWithinHours } from './hours';
 import { sendConfirmation } from './notifications';
 import { AppError } from './errors';
 import { audit, type Ctx } from './audit';
@@ -52,6 +53,7 @@ export async function createAppointment(q: Queryable, ctx: Ctx, a: NewAppointmen
   const [pt] = await q.query('SELECT 1 FROM patients WHERE id = $1', [a.patientId]);
   if (!prov) throw new AppError(404, 'PROVIDER_NOT_FOUND');
   if (!pt) throw new AppError(404, 'PATIENT_NOT_FOUND');
+  if (!a.walkIn) await assertWithinHours(q, ctx, a.providerId, a.startsAt, a.durationMin);
   await assertFree(q, a.providerId, a.startsAt, a.durationMin);
   const [row] = await q.query<{ id: string }>(
     `INSERT INTO appointments (practice_id, patient_id, provider_id, starts_at, duration_min, treatment, walk_in, insurance_plan, self_pay)
@@ -97,7 +99,7 @@ export async function bookAppointment(q: Queryable, ctx: Ctx, b: Booking) {
   } else {
     const all = await q.query<{ id: string }>('SELECT id FROM providers WHERE chair IS NOT NULL ORDER BY name');
     for (const p of all) {
-      try { await assertFree(q, p.id, starts_at, b.durationMin); providerId = p.id; break; } catch (e) { if (!(e instanceof AppError)) throw e; }
+      try { await assertWithinHours(q, ctx, p.id, starts_at, b.durationMin); await assertFree(q, p.id, starts_at, b.durationMin); providerId = p.id; break; } catch (e) { if (!(e instanceof AppError)) throw e; }
     }
     if (!providerId) throw new AppError(409, 'SLOT_TAKEN', 'No provider is free at that time');
   }

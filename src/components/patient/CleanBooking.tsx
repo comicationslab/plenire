@@ -4,6 +4,7 @@ import { ApiError } from '../../api/client';
 import { useBook } from '../../api/hooks';
 import { usePractice } from '../../context/PracticeContext';
 import { toE164 } from '../../lib/format';
+import { slotsForDate } from '../../lib/hours';
 import { Search } from 'lucide-react';
 import { searchInsurancePlans } from '../../config/insurance';
 import { BOOKING_CONSENT_STATEMENT } from '../../services/hipaaCompliance';
@@ -53,6 +54,10 @@ export const CleanBooking: React.FC = () => {
   const pickPlan = (name: string) => { setInsurance({ kind: 'plan', name }); setInsQuery(''); };
   const insuranceLabel = insurance ? (insurance.kind === 'self' ? 'No insurance (self-pay)' : insurance.name) : '';
 
+  // Times come from the providers' working hours (set by the owner in Settings), not a fixed 9-5.
+  const bookable = provider === 'any' ? practice.providers.filter((p) => p.op) : practice.providers.filter((p) => p.id === provider);
+  const duration = visitType?.duration ?? 30;
+
   // Generate 21 days
   const days = Array.from({ length: 21 }, (_, i) => {
     const d = new Date();
@@ -61,21 +66,11 @@ export const CleanBooking: React.FC = () => {
       iso: d.toLocaleDateString('en-CA'),
       dow: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()],
       num: d.getDate(),
-      closed: d.getDay() === 0,
+      closed: slotsForDate(d.toLocaleDateString('en-CA'), bookable, duration).length === 0,
     };
   });
 
-  const slots = [
-    { time: '09:00', label: '9:00 AM' },
-    { time: '09:30', label: '9:30 AM' },
-    { time: '10:00', label: '10:00 AM' },
-    { time: '10:30', label: '10:30 AM' },
-    { time: '11:00', label: '11:00 AM' },
-    { time: '13:30', label: '1:30 PM' },
-    { time: '14:00', label: '2:00 PM' },
-    { time: '14:30', label: '2:30 PM' },
-    { time: '15:00', label: '3:00 PM' },
-  ];
+  const slots = date ? slotsForDate(date, bookable, duration) : [];
 
   const isValidForm =
     firstName.trim() &&
@@ -201,7 +196,7 @@ export const CleanBooking: React.FC = () => {
                   <div className="text-[11px] uppercase font-bold text-[#a3533a] tracking-widest">Provider</div>
                   <div className="space-y-2">
                     <button
-                      onClick={() => setProvider('any')}
+                      onClick={() => { setProvider('any'); setDate(null); setTime(null); }}
                       className={`w-full p-2.5 px-3 border text-left flex items-center gap-3 transition-colors ${
                         provider === 'any'
                           ? 'border-[#1e2a28] bg-[#1e2a28] text-[#f4f0e8]'
@@ -227,7 +222,7 @@ export const CleanBooking: React.FC = () => {
                       .map((p) => (
                         <button
                           key={p.id}
-                          onClick={() => setProvider(p.id)}
+                          onClick={() => { setProvider(p.id); setDate(null); setTime(null); }}
                           className={`w-full p-2.5 px-3 border text-left flex items-center gap-3 transition-colors ${
                             provider === p.id
                               ? 'border-[#1e2a28] bg-[#1e2a28] text-[#f4f0e8]'
@@ -331,7 +326,7 @@ export const CleanBooking: React.FC = () => {
                   <button
                     key={d.iso}
                     disabled={d.closed}
-                    onClick={() => setDate(d.iso)}
+                    onClick={() => { setDate(d.iso); setTime(null); }}
                     className={`w-[54px] p-2 text-center border shrink-0 transition-colors ${
                       d.closed
                         ? 'opacity-35 cursor-not-allowed border-[#1e2a28]/16'
@@ -351,7 +346,8 @@ export const CleanBooking: React.FC = () => {
               <div className="space-y-2 pt-2">
                 <div className="text-[11px] font-bold uppercase tracking-wider text-[#1e2a28]">Openings</div>
                 <div className="grid grid-cols-3 gap-2">
-                  {slots.map((s) => (
+                  {!date && <p className="col-span-3 text-[12px] text-[#1e2a28]/70 m-0">Pick a day to see times.</p>}
+                {slots.map((s) => (
                     <button
                       key={s.time}
                       onClick={() => setTime(s.time)}

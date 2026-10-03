@@ -23,7 +23,7 @@ export const setRefreshHandler = (fn: (() => Promise<boolean>) | null) => { refr
 interface Options { csrf?: boolean }
 
 /** One place that talks to the server: adds the token, checks the response shape, retries once after a silent token refresh. */
-export async function api<S extends z.ZodTypeAny>(method: 'GET' | 'POST' | 'PATCH', path: string, schema: S, body?: unknown, opts: Options & { retried?: boolean } = {}): Promise<z.infer<S>> {
+export async function api<S extends z.ZodTypeAny>(method: 'GET' | 'POST' | 'PATCH' | 'PUT', path: string, schema: S, body?: unknown, opts: Options & { retried?: boolean } = {}): Promise<z.infer<S>> {
   let res: Response;
   try {
     res = await fetch(BASE + path, {

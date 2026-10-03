@@ -90,21 +90,17 @@ export async function sendFollowUp(q: Queryable, ctx: Ctx, appointmentId: string
 // ───────────── scheduled job: appointment reminders ─────────────
 
 /**
- * Run every minute with the other scheduled work. For each lead time the practice chose (default 24h and 2h) it texts patients whose
+ * Run every minute with the other scheduled work, around the clock: a 9:00 visit with a 2-hour reminder is texted at 7:00. For each lead time the practice chose (default 24h and 2h) it texts patients whose
  * appointment is still 'scheduled' and now inside that window. Rules, so nobody gets a pointless text:
  *  - a visit booked INSIDE the window gets no reminder for it (the confirmation just went out);
  *  - a late run catches up only briefly (up to 3h, or half the lead time) rather than texting a stale reminder;
- *  - nothing goes out before 8:00 AM or after 9:00 PM practice time (`quietHours: false` is for tests);
  *  - each reminder is sent once, tracked in appointment_notifications.
  */
-export async function queueReminders(db: Db, practiceId: string, opts: { quietHours?: boolean } = {}): Promise<{ queued: number }> {
+export async function queueReminders(db: Db, practiceId: string): Promise<{ queued: number }> {
   return db.tenant(practiceId, async (q) => {
     const ctx = SYSTEM(practiceId);
-    const [p] = await q.query<{ reminder_hours: number[]; allowed: boolean }>(
-      `SELECT reminder_hours, (extract(hour FROM now() AT TIME ZONE timezone) BETWEEN 8 AND 20) AS allowed FROM practices WHERE id = $1`,
-      [practiceId],
-    );
-    if (!p || (opts.quietHours !== false && !p.allowed)) return { queued: 0 };
+    const [p] = await q.query<{ reminder_hours: number[] }>('SELECT reminder_hours FROM practices WHERE id = $1', [practiceId]);
+    if (!p) return { queued: 0 };
     let queued = 0;
     for (const h of p.reminder_hours) {
       const lead = h * 3600;

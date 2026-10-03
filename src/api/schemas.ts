@@ -32,13 +32,15 @@ export const forgotSchema = z.object({ ok: z.boolean(), devLink: z.string().opti
 export const providerIdSchema = z.object({ providerId: z.string() });
 
 export const adminPracticesSchema = z.array(z.object({
-  id: z.string(), name: z.string(), phone: z.string(), timezone: z.string(), status: z.enum(['active', 'suspended']), plan: z.string(), staffLimit: z.number(),
+  id: z.string(), name: z.string(), phone: z.string(), timezone: z.string(), status: z.enum(['active', 'suspended', 'removed']), plan: z.string(), staffLimit: z.number(),
   createdAt: z.string(), activeStaff: z.number(), pendingInvites: z.number(), ownerEmail: z.string().nullable(), lastActiveAt: z.string().nullable(),
 }));
 export const createPracticeResultSchema = z.object({ practiceId: z.string().optional(), ownerEmail: z.string().optional(), email: z.string().optional(), emailSent: z.boolean(), inviteLink: z.string().optional() });
 export const adminsSchema = z.array(z.object({ id: z.string(), name: z.string(), email: z.string(), status: z.enum(['invited', 'active', 'disabled']), createdAt: z.string() }));
 
-export const providerSchema = z.object({ id: z.string(), name: z.string(), initials: z.string(), chair: z.string().nullable(), title: z.string().nullable() });
+/** One working window: weekday 0 = Sunday ... 6 = Saturday, minutes from midnight in the practice's time zone. */
+export const hoursWindowSchema = z.object({ weekday: z.number(), startMin: z.number(), endMin: z.number() });
+export const providerSchema = z.object({ id: z.string(), name: z.string(), initials: z.string(), chair: z.string().nullable(), title: z.string().nullable(), hours: z.array(hoursWindowSchema).default([]) });
 export const providersSchema = z.array(providerSchema);
 
 export const appointmentStatus = z.enum(['scheduled', 'arrived', 'completed', 'noshow', 'cancelled']);
@@ -70,6 +72,16 @@ export const patientSchema = z.object({
   lastVisit: z.string().nullable(), recentVisit: z.string().nullable(), status: z.enum(['Active', 'Waitlist', 'Recovered']),
 });
 export const patientsSchema = z.array(patientSchema);
+export const patientDetailSchema = z.object({
+  id: z.string(), name: z.string(), phone: z.string().nullable(), email: z.string().nullable(),
+  smsConsent: z.boolean(), smsConsentAt: z.string().nullable(), optedOutAt: z.string().nullable(),
+  newPatient: z.boolean(), walkIn: z.boolean(), notes: z.string().nullable(), updatedAt: z.string().nullable(), createdAt: z.string(),
+  appointments: z.array(z.object({
+    id: z.string(), startsAt: z.string(), durationMin: z.number(), treatment: z.string(), status: appointmentStatus,
+    providerName: z.string(), followUp: z.string().nullable(),
+  })),
+});
+export const patientUpdateResultSchema = z.object({ ok: z.boolean(), changed: z.array(z.string()), consentReset: z.boolean() });
 export const patientSummarySchema = z.object({ total: z.number(), consented: z.number(), recovered: z.number() });
 
 export const waitlistSchema = z.array(z.object({

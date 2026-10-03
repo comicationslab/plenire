@@ -4,15 +4,17 @@ import { usePractice } from '../../context/PracticeContext';
 import { toPatient } from '../../api/format';
 import { usePatients, usePatientSummary } from '../../api/hooks';
 import { QueryBoundary } from '../ui/QueryBoundary';
+import { PatientCard } from './PatientCard';
 
 export const CleanPatients: React.FC = () => {
   const { maskName, maskPhone, maskEmail } = useHIPAA();
-  const { practice } = usePractice();
+  const { practice, role } = usePractice();
   const pq = usePatients();
   const summary = usePatientSummary();
   const patients = (pq.data ?? []).map((p) => toPatient(p, practice.timezone));
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('All patients');
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const filtered = patients.filter((p) => {
     const matchQ = [p.name, p.phone, p.email].join(' ').toLowerCase().includes(search.toLowerCase());
@@ -89,7 +91,12 @@ export const CleanPatients: React.FC = () => {
             filtered.map((p) => (
               <div
                 key={p.id}
-                className="grid grid-cols-[1.35fr_1.1fr_1fr_1.1fr_0.8fr] gap-4 p-3 px-4 items-center text-xs hover:bg-[#1e2a28]/[0.02]"
+                role="button"
+                tabIndex={0}
+                aria-label={`Open patient card for ${maskName(p.name)}`}
+                onClick={() => setOpenId(p.id)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(p.id); } }}
+                className="grid grid-cols-[1.35fr_1.1fr_1fr_1.1fr_0.8fr] gap-4 p-3 px-4 items-center text-xs cursor-pointer hover:bg-[#1e2a28]/[0.05] focus:outline-none focus-visible:bg-[#1e2a28]/[0.06]"
               >
                 <div className="flex items-center gap-2.5">
                   <span className="w-8 h-8 rounded-full border border-[#1e2a28]/25 flex items-center justify-center font-bold text-[11px] shrink-0">
@@ -127,6 +134,7 @@ export const CleanPatients: React.FC = () => {
         </div>
       </div>
       </QueryBoundary>
+      {openId && <PatientCard patientId={openId} onClose={() => setOpenId(null)} canEdit={role === 'owner' || role === 'front_desk'} />}
     </div>
   );
 };

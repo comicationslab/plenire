@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { ApiError } from '../../api/client';
 import { toAppointment, todayIn, zonedToIso } from '../../api/format';
+import { fmtMin, weekdayOfDate, windowOn } from '../../lib/hours';
 import { toE164 } from '../../lib/format';
 import { useAddWalkIn, useAppointments, useSetAppointmentStatus, useSetFollowUp } from '../../api/hooks';
 import { useHIPAA } from '../../context/HIPAAContext';
@@ -46,7 +47,17 @@ export const CleanToday: React.FC = () => {
   const [walkinConsent, setWalkinConsent] = useState(true);
   const [walkinError, setWalkinError] = useState('');
 
-  const calendarProviders = chairs.map((p) => ({ name: p.name, initials: p.initials, op: p.op ?? 'Op 1' }));
+  // Each chair's working hours today (set by the owner in Settings). They decide how tall the calendar is and which parts are shaded as closed.
+  const weekday = weekdayOfDate(todayIn(practice.timezone));
+  const calendarProviders = chairs.map((p) => ({ name: p.name, initials: p.initials, op: p.op ?? 'Op 1', win: windowOn(p.hours, weekday) }));
+  const PX = 1.4; // pixels per minute
+  const shown = calendarProviders.filter((p) => chairFilter === 'all' || chairFilter === p.name);
+  const starts = [...shown.flatMap((p) => (p.win ? [p.win.startMin] : [])), ...appointments.map((a) => a.mins)];
+  const ends = [...shown.flatMap((p) => (p.win ? [p.win.endMin] : [])), ...appointments.map((a) => a.mins + a.dur)];
+  const dayStart = starts.length ? Math.max(0, Math.floor(Math.min(...starts) / 60) * 60) : 480;
+  const dayEnd = ends.length ? Math.min(1440, Math.max(Math.ceil(Math.max(...ends) / 60) * 60, dayStart + 240)) : 1020;
+  const calHeight = (dayEnd - dayStart) * PX;
+  const hourMarks = Array.from({ length: Math.floor(dayEnd / 60) - Math.ceil(dayStart / 60) + 1 }, (_, i) => Math.ceil(dayStart / 60) + i);
 
   const visible = chairFilter === 'all'
     ? appointments
@@ -224,23 +235,23 @@ export const CleanToday: React.FC = () => {
                   </span>
                   <div>
                     <strong className="block text-[11px] font-semibold leading-tight">{p.name}</strong>
-                    <small className="block text-[11px] text-[#1e2a28]/70">{p.op}</small>
+                    <small className="block text-[11px] text-[#1e2a28]/70">{p.op} · {p.win ? `${fmtMin(p.win.startMin)} – ${fmtMin(p.win.endMin)}` : 'Off today'}</small>
                   </div>
                 </div>
               ))}
           </div>
 
           {/* Time body */}
-          <div className="grid grid-cols-[56px_repeat(4,minmax(160px,1fr))] min-w-[760px] relative h-[780px]">
+          <div className="grid grid-cols-[56px_repeat(4,minmax(160px,1fr))] min-w-[760px] relative" style={{ height: `${calHeight}px` }}>
             {/* Hours axis */}
             <div className="border-r border-[#1e2a28]/15 bg-[#1e2a28]/[0.025] relative">
-              {[8, 9, 10, 11, 12, 13, 14, 15, 16, 17].map((h) => (
+              {hourMarks.map((h) => (
                 <span
                   key={h}
-                  style={{ top: `${(h * 60 - 480) * 1.4}px` }}
+                  style={{ top: `${(h * 60 - dayStart) * PX}px` }}
                   className="absolute right-2 -translate-y-1/2 text-[11px] text-[#1e2a28]/70"
                 >
-                  {h % 12 || 12} {h < 12 ? 'AM' : 'PM'}
+                  {fmtMin(h * 60)}
                 </span>
               ))}
             </div>
@@ -255,9 +266,18 @@ export const CleanToday: React.FC = () => {
                     key={p.name}
                     className="border-r border-[#1e2a28]/15 last:border-r-0 relative bg-[repeating-linear-gradient(to_bottom,transparent_0px,transparent_83px,rgba(30,42,40,0.11)_83px,rgba(30,42,40,0.11)_84px)]"
                   >
+                    {/* Closed time for this chair (before opening, after closing, or the whole day off) */}
+                    {p.win ? (
+                      <>
+                        <div aria-hidden="true" style={{ top: 0, height: `${Math.max(0, (p.win.startMin - dayStart) * PX)}px` }} className="absolute inset-x-0 bg-[#1e2a28]/[0.07] pointer-events-none" />
+                        <div aria-hidden="true" style={{ top: `${(p.win.endMin - dayStart) * PX}px`, bottom: 0 }} className="absolute inset-x-0 bg-[#1e2a28]/[0.07] pointer-events-none" />
+                      </>
+                    ) : (
+                      <div aria-hidden="true" className="absolute inset-0 bg-[#1e2a28]/[0.07] pointer-events-none flex items-start justify-center pt-3 text-[11px] font-semibold text-[#1e2a28]/60">Off today</div>
+                    )}
                     {chairAppts.map((appt) => {
-                      const top = (appt.mins - 480) * 1.4;
-                      const height = Math.max(32, appt.dur * 1.4 - 6);
+                      const top = (appt.mins - dayStart) * PX;
+                      const height = Math.max(32, appt.dur * PX - 6);
                       const isNoShow = appt.status === 'noshow';
 
                       return (

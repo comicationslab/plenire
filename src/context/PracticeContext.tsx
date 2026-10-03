@@ -34,7 +34,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const p = me.data.practice;
     const practice: PracticeInfo = {
       id: p.id, name: p.name, initials: initialsOf(p.name), tagline: '', timezone: p.timezone, address: p.address ?? '', phone: p.phone,
-      providers: providers.data.map((x) => ({ id: x.id, name: x.name, role: x.title ?? '', initials: x.initials, op: x.chair ?? undefined })),
+      providers: providers.data.map((x) => ({ id: x.id, name: x.name, role: x.title ?? '', initials: x.initials, op: x.chair ?? undefined, hours: x.hours })),
       visitTypes: VISIT_TYPES.map((v) => ({ ...v, providers: v.providers })),
     };
     const user: StaffUser = { id: me.data.staffId, name: me.data.name, initials: initialsOf(me.data.name), role: me.data.role, title: ROLE_LABEL[me.data.role], practice: p.name };
