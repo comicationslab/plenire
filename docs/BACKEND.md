@@ -113,3 +113,17 @@ Check current AWS HIPAA-eligible service lists and pricing, and sign the AWS BAA
 - **No multi-factor authentication yet.** Add it for owners and platform admins before real use (Cognito provides it, or add TOTP here).
 - Email delivery is a console stub until Amazon SES is connected (production mode refuses to start with it).
 - The per-IP rate limit is per server instance; AWS WAF should enforce it globally. The account lockout is already global.
+
+
+## Automatic patient texts
+
+All go through `queueMessage` (consent, STOP and health-wording checks), appear in Messages, and are sent by the outbox. A text that cannot be sent never blocks the booking or status change. Code: `server/services/notifications.ts`.
+
+| Text | Trigger | Sent |
+|---|---|---|
+| Booking confirmation | `POST /api/bookings`, `POST /api/appointments` (not walk-ins) | once per appointment |
+| Reminder | scheduled job (`queueReminders`, run by `runScheduled`) at the practice's `reminder_hours` (default 24 and 2) | once per lead time, 8 AM to 9 PM clinic time, only for `scheduled` visits |
+| Thank-you + Google review link | status set to Seen (`completed`) | once per visit; link comes from Settings (`practices.google_review_url`) |
+| Follow-up confirmation | follow-up set or changed | timing only, never the clinical label |
+
+`appointment_notifications` (unique on appointment + kind) is the sent ledger. `appointments.thanked` is true only when a thank-you was actually queued.

@@ -2,6 +2,7 @@ import type { Db, Queryable } from '../db/adapter';
 import { AppError } from './errors';
 import { SYSTEM, audit, type Ctx } from './audit';
 import { queueMessage, queueReply } from './messaging';
+import { sendThanks } from './notifications';
 
 export type AppointmentStatus = 'scheduled' | 'arrived' | 'completed' | 'noshow' | 'cancelled';
 
@@ -10,7 +11,7 @@ export type AppointmentStatus = 'scheduled' | 'arrived' | 'completed' | 'noshow'
 /** Changes an appointment's status. A no-show or cancellation automatically creates ONE recovery opening. */
 export async function setAppointmentStatus(q: Queryable, ctx: Ctx, appointmentId: string, status: AppointmentStatus) {
   const [appt] = await q.query<any>(
-    `UPDATE appointments SET status = $2, thanked = thanked OR $2 = 'completed' WHERE id = $1
+    `UPDATE appointments SET status = $2 WHERE id = $1
       RETURNING id, provider_id, patient_id, starts_at, duration_min, treatment`,
     [appointmentId, status],
   );
@@ -40,7 +41,15 @@ export async function setAppointmentStatus(q: Queryable, ctx: Ctx, appointmentId
       await audit(q, ctx, 'OPENING_CLOSED', { openingId: closed[0].id, reason: 'appointment restored' });
     }
   }
-  return { appointmentId, status, openingId };
+
+  // Visit finished: thank the patient and ask for a review (once per visit). `thanked` now means a text really was queued.
+  let thanked = false;
+  if (status === 'completed' && (await sendThanks(q, ctx, appointmentId))) {
+    await q.query('UPDATE appointments SET thanked = true WHERE id = $1', [appointmentId]);
+    await audit(q, ctx, 'THANKS_QUEUED', { appointmentId });
+    thanked = true;
+  }
+  return { appointmentId, status, openingId, thanked };
 }
 
 // ───────────── offers ─────────────

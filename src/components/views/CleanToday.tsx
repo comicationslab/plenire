@@ -62,7 +62,7 @@ export const CleanToday: React.FC = () => {
     setActionError('');
     // The server records the change, creates the recovery opening for a no-show, and writes the activity log.
     setStatus.mutate({ id: selectedAppt.id, status }, {
-      onSuccess: () => setSelectedAppt((p) => (p ? { ...p, status, thanked: status === 'completed' ? true : p.thanked } : null)),
+      onSuccess: (r) => setSelectedAppt((p) => (p ? { ...p, status, thanked: r.thanked ? true : p.thanked } : null)),
       onError: fail,
     });
   };

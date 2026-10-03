@@ -11,7 +11,7 @@ export const meSchema = z.object({
   staffId: z.string(),
   name: z.string(),
   role: roleSchema,
-  practice: z.object({ id: z.string(), name: z.string(), phone: z.string(), address: z.string().nullable(), timezone: z.string() }),
+  practice: z.object({ id: z.string(), name: z.string(), phone: z.string(), address: z.string().nullable(), timezone: z.string(), googleReviewUrl: z.string().nullable().optional(), reminderHours: z.array(z.number()).optional() }),
 });
 
 export const anyRoleSchema = z.enum(['owner', 'front_desk', 'dentist', 'hygienist', 'platform_admin']);
@@ -101,7 +101,7 @@ export const auditVerifySchema = z.object({ intact: z.boolean(), firstBrokenSeq:
 
 export const sendOffersSchema = z.object({ openingId: z.string(), offered: z.number() });
 export const replySchema = z.object({ outcome: z.string() });
-export const statusChangeSchema = z.object({ appointmentId: z.string(), status: appointmentStatus, openingId: z.string().nullable() });
+export const statusChangeSchema = z.object({ appointmentId: z.string(), status: appointmentStatus, openingId: z.string().nullable(), thanked: z.boolean().optional() });
 export const bookingResultSchema = z.object({ appointmentId: z.string(), patientId: z.string(), providerName: z.string(), reference: z.string() });
 export const okSchema = z.object({ ok: z.boolean() });
 export const idSchema = z.object({ patientId: z.string().optional(), appointmentId: z.string().optional() });

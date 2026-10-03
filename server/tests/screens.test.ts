@@ -5,6 +5,7 @@ import { localTokens, type LocalTokens } from '../auth/tokens';
 import type { Db } from '../db/adapter';
 import { seedDemo, seedPractice, type SeededPractice } from '../db/seed';
 import type { MessageProvider } from '../services/messaging';
+import { queueReminders } from '../services/notifications';
 import { backend, freshDb } from './helpers';
 
 describe(`endpoints behind the screens (${backend()})`, () => {
@@ -69,12 +70,12 @@ describe(`endpoints behind the screens (${backend()})`, () => {
     assert.equal(live.length, 0);
   });
 
-  it('completed visits are marked thanked; follow-ups can be set and cleared', async () => {
+  it('completed visits can be marked; follow-ups can be set and cleared', async () => {
     const id = A.appointments['Isabella Flores'];
     await call('PATCH', `/api/appointments/${id}/status`, fd, { status: 'completed' });
     assert.equal((await call('PATCH', `/api/appointments/${id}/follow-up`, fd, { followUp: 'Call in 2 weeks' })).status, 200);
     let a = (await call('GET', '/api/appointments', fd)).json.find((x: any) => x.id === id);
-    assert.deepEqual([a.thanked, a.followUp], [true, 'Call in 2 weeks']);
+    assert.equal(a.followUp, 'Call in 2 weeks');
     await call('PATCH', `/api/appointments/${id}/follow-up`, fd, { followUp: null });
     a = (await call('GET', '/api/appointments', fd)).json.find((x: any) => x.id === id);
     assert.equal(a.followUp, null);
@@ -113,6 +114,109 @@ describe(`endpoints behind the screens (${backend()})`, () => {
     assert.deepEqual([by(selfPay.json.appointmentId).insurance_plan, by(selfPay.json.appointmentId).self_pay], [null, true]);
     assert.deepEqual([by(skipped.json.appointmentId).insurance_plan, by(skipped.json.appointmentId).self_pay], [null, false]);
     assert.equal((await call('POST', '/api/bookings', fd, { ...base, time: '11:30', insurancePlan: 'x'.repeat(121) })).status, 422, 'plan name is length-limited');
+  });
+
+  describe('automatic patient texts', () => {
+    const thread = async (patientId: string) => (await call('GET', `/api/messages?patientId=${patientId}`, fd)).json.filter((m: any) => m.direction === 'out');
+    const mk = async (name: string, smsConsent: boolean) =>
+      (await call('POST', '/api/patients', fd, { name, phone: `+1555555${String(Math.floor(1000 + Math.random() * 8999))}`, smsConsent })).json.patientId as string;
+    const provider = async () => (await call('GET', '/api/providers', fd)).json[0].id as string;
+    const insertAppt = (patientId: string, providerId: string, hoursAhead: number, bookedDaysAgo: number) =>
+      db.admin((q) => q.query<{ id: string }>(
+        `INSERT INTO appointments (practice_id, patient_id, provider_id, starts_at, duration_min, treatment, created_at)
+         VALUES ($1,$2,$3, now() + make_interval(hours => $4), 30, 'Cleaning & Checkup', now() - make_interval(days => $5)) RETURNING id`,
+        [A.practiceId, patientId, providerId, hoursAhead, bookedDaysAgo])).then((r) => r[0].id);
+    const book = (p: any) => call('POST', '/api/bookings', fd, { firstName: 'Cora', lastName: p.last, phone: p.phone, newPatient: true, smsConsent: p.consent, date: tomorrow(), time: p.time, durationMin: 30, treatment: 'Cleaning & Checkup', providerId: null });
+
+    it('booking sends a confirmation that shows up in Messages; no consent = no text, booking still works', async () => {
+      const yes = await book({ last: 'Texted', phone: '+15555551001', consent: true, time: '09:00' });
+      assert.equal(yes.status, 201);
+      const t = await thread(yes.json.patientId);
+      assert.equal(t.length, 1);
+      assert.match(t[0].body, /^Hi Cora, you're booked at .+ on \w{3}, \w{3} \d+ at \d+:\d{2} [AP]M\./);
+      assert.match(t[0].body, /Reply STOP to opt out\.$/);
+      assert.equal(t[0].status, 'sent', 'delivered through the outbox straight away');
+      assert.doesNotMatch(t[0].body, /Cleaning/i, 'no treatment in the text');
+
+      const no = await book({ last: 'Silent', phone: '+15555551002', consent: false, time: '09:30' });
+      assert.equal(no.status, 201);
+      assert.equal((await thread(no.json.patientId)).length, 0);
+    });
+
+    it('Seen sends the thank-you with the review link exactly once, and marks it thanked', async () => {
+      assert.equal((await call('PATCH', '/api/practice/settings', owner, { googleReviewUrl: 'https://g.page/r/demo/review', reminderHours: [24, 2] })).status, 200);
+      assert.equal((await call('PATCH', '/api/practice/settings', fd, { googleReviewUrl: null, reminderHours: [] })).status, 403, 'owner only');
+      assert.equal((await call('PATCH', '/api/practice/settings', owner, { googleReviewUrl: 'http://insecure.example', reminderHours: [24] })).status, 422, 'https only');
+      const pid = await mk('Thea Seen', true);
+      const appt = await insertAppt(pid, await provider(), 3, 1);
+      const r1 = await call('PATCH', `/api/appointments/${appt}/status`, fd, { status: 'completed' });
+      assert.equal(r1.json.thanked, true);
+      let t = await thread(pid);
+      assert.equal(t.length, 1);
+      assert.match(t[0].body, /Thanks for visiting .+, Thea! .*https:\/\/g\.page\/r\/demo\/review/);
+      assert.equal((await call('GET', '/api/appointments', fd)).json.find((x: any) => x.id === appt).thanked, true);
+      await call('PATCH', `/api/appointments/${appt}/status`, fd, { status: 'arrived' });
+      await call('PATCH', `/api/appointments/${appt}/status`, fd, { status: 'completed' });
+      t = await thread(pid);
+      assert.equal(t.length, 1, 'toggling Seen again does not text twice');
+    });
+
+    it('thank-you without consent is not sent and the visit is not marked thanked', async () => {
+      const pid = await mk('Nico Nope', false);
+      const appt = await insertAppt(pid, await provider(), 3, 1);
+      const r = await call('PATCH', `/api/appointments/${appt}/status`, fd, { status: 'completed' });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.thanked, false);
+      assert.equal((await thread(pid)).length, 0);
+    });
+
+    it('setting a follow-up sends a confirmation with timing only (no clinical wording), not on repeat or clear', async () => {
+      const pid = await mk('Fern Follow', true);
+      const appt = await insertAppt(pid, await provider(), 48, 1);
+      await call('PATCH', `/api/appointments/${appt}/follow-up`, fd, { followUp: '3-month perio maintenance' });
+      let t = await thread(pid);
+      assert.equal(t.length, 1);
+      assert.match(t[0].body, /Your next visit is due in about 3 months\./);
+      assert.doesNotMatch(t[0].body, /perio/i);
+      await call('PATCH', `/api/appointments/${appt}/follow-up`, fd, { followUp: '3-month perio maintenance' });
+      await call('PATCH', `/api/appointments/${appt}/follow-up`, fd, { followUp: null });
+      assert.equal((await thread(pid)).length, 1, 'same text and clearing do not text again');
+      await call('PATCH', `/api/appointments/${appt}/follow-up`, fd, { followUp: 'Custom · Nov 4 · 2:30 PM' });
+      t = await thread(pid);
+      assert.equal(t.length, 2);
+      assert.match(t[1].body, /follow-up visit is set for Nov 4 at 2:30 PM\./);
+    });
+
+    it('reminders: due visits get one text each; late bookings, other statuses and opted-out patients do not', async () => {
+      const prov = await provider();
+      const due = await mk('Dana Due', true);
+      const lateBooked = await mk('Lee Late', true);
+      const far = await mk('Finn Far', true);
+      const done = await mk('Cal Done', true);
+      const optedOut = await mk('Opt Out', false);
+      const a = await insertAppt(due, prov, 23, 2);           // 23h away, booked 2 days ago → inside the 24h window
+      await insertAppt(lateBooked, prov, 23, 0);              // booked just now, inside the window → confirmation already covers it
+      await insertAppt(far, prov, 60, 3);                     // 60h away → not yet
+      const c = await insertAppt(done, prov, 23, 2);
+      await db.admin((q) => q.query("UPDATE appointments SET status = 'cancelled' WHERE id = $1", [c]));
+      await insertAppt(optedOut, prov, 23, 2);
+      await insertAppt(await mk('Stu Stale', true), prov, 10, 2);   // 24h reminder window passed hours ago → no stale reminder
+
+      const run1 = await queueReminders(db, A.practiceId, { quietHours: false });
+      assert.equal(run1.queued, 1);
+      const t = await thread(due);
+      assert.equal(t.length, 1);
+      assert.match(t[0].body, /reminder from .+: your appointment is \w{3}, \w{3} \d+ at \d+:\d{2} [AP]M\./);
+      for (const p of [lateBooked, far, done, optedOut]) assert.equal((await thread(p)).length, 0);
+      assert.equal(run1.queued, 1, 'the stale 10h visit got nothing either');
+
+      assert.equal((await queueReminders(db, A.practiceId, { quietHours: false })).queued, 0, 'running again never repeats a reminder');
+      const ledger = await db.admin((q) => q.query<any>('SELECT kind FROM appointment_notifications WHERE appointment_id = $1', [a]));
+      assert.deepEqual(ledger.map((r: any) => r.kind), ['reminder_24h']);
+
+      await db.admin((q) => q.query("UPDATE appointments SET starts_at = now() + interval '1 hour 30 minutes' WHERE id = $1", [a]));
+      assert.equal((await queueReminders(db, A.practiceId, { quietHours: false })).queued, 1, 'the 2-hour reminder is separate from the 24-hour one');
+    });
   });
 
   it('booking cannot use another practice\'s provider', async () => {

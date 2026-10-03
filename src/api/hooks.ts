@@ -53,6 +53,8 @@ function useWrite<V, R>(fn: (v: V) => Promise<R>) {
 export const useSetAppointmentStatus = () =>
   useWrite((v: { id: string; status: 'scheduled' | 'arrived' | 'completed' | 'noshow' }) =>
     api('PATCH', `/api/appointments/${v.id}/status`, S.statusChangeSchema, { status: v.status }));
+export const useSavePracticeSettings = () =>
+  useWrite((v: { googleReviewUrl: string | null; reminderHours: number[] }) => api('PATCH', '/api/practice/settings', S.okSchema, v));
 export const useSetFollowUp = () =>
   useWrite((v: { id: string; followUp: string | null }) => api('PATCH', `/api/appointments/${v.id}/follow-up`, S.okSchema, { followUp: v.followUp }));
 export const useSendOffers = () =>

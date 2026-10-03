@@ -15,6 +15,7 @@ import type { LocalTokens, Role, Verifier } from './auth/tokens';
 import { AppError } from './services/errors';
 import { audit, type Ctx } from './services/audit';
 import { dispatchOutbox, queueMessage, type MessageProvider } from './services/messaging';
+import { sendConfirmation, sendFollowUp } from './services/notifications';
 import { acceptOffer, handleReply, sendOffers, setAppointmentStatus } from './services/recovery';
 import { bookAppointment, createAppointment, createPatient } from './services/scheduling';
 import { recoveryRate, revenueRecovered } from './services/metrics';
@@ -84,7 +85,7 @@ export function createApp(deps: AppDeps) {
 
   api.get('/me', async (c) =>
     c.json(await run(c, async (q, ctx) => {
-      const [practice] = await q.query('SELECT id, name, phone, address, timezone FROM practices WHERE id = $1', [ctx.practiceId]);
+      const [practice] = await q.query(`SELECT id, name, phone, address, timezone, google_review_url AS "googleReviewUrl", reminder_hours AS "reminderHours" FROM practices WHERE id = $1`, [ctx.practiceId]);
       const [staff] = await q.query<{ name: string }>('SELECT name FROM staff WHERE id = $1', [ctx.actorId]);
       return { staffId: ctx.actorId, name: staff?.name ?? 'Staff', role: ctx.role, practice };
     })),
@@ -111,7 +112,9 @@ export function createApp(deps: AppDeps) {
   api.patch('/appointments/:id/status', requireRole(...STAFF_WRITE), async (c) => {
     const id = parse(uuid, c.req.param('id'));
     const { status } = parse(z.object({ status: z.enum(['scheduled', 'arrived', 'completed', 'noshow', 'cancelled']) }), await c.req.json());
-    return c.json(await run(c, (q, ctx) => setAppointmentStatus(q, ctx, id, status)));
+    const result = await run(c, (q, ctx) => setAppointmentStatus(q, ctx, id, status));
+    await flush(c);   // the thank-you / review text goes out now, not on the next scheduled run
+    return c.json(result);
   });
 
   api.get('/openings', async (c) => {
@@ -209,16 +212,40 @@ export function createApp(deps: AppDeps) {
       patientId: uuid, providerId: uuid, startsAt: z.string().datetime({ offset: true }),
       durationMin: z.number().int().min(5).max(480), treatment: z.string().trim().min(1).max(120), walkIn: z.boolean().optional(),
     }), await c.req.json());
-    return c.json({ appointmentId: await run(c, (q, ctx) => createAppointment(q, ctx, b)) }, 201);
+    const appointmentId = await run(c, async (q, ctx) => {
+      const id = await createAppointment(q, ctx, b);
+      if (!b.walkIn) await sendConfirmation(q, ctx, id);   // a walk-in is already in the chair
+      return id;
+    });
+    await flush(c);
+    return c.json({ appointmentId }, 201);
   });
 
   api.patch('/appointments/:id/follow-up', requireRole(...STAFF_WRITE), async (c) => {
     const id = parse(uuid, c.req.param('id'));
     const { followUp } = parse(z.object({ followUp: z.string().trim().max(200).nullable() }), await c.req.json());
     await run(c, async (q, ctx) => {
-      const r = await q.query('UPDATE appointments SET follow_up = $2 WHERE id = $1 RETURNING id', [id, followUp || null]);
-      if (!r.length) throw new AppError(404, 'APPOINTMENT_NOT_FOUND');
+      const [before] = await q.query<{ follow_up: string | null }>('SELECT follow_up FROM appointments WHERE id = $1', [id]);
+      if (!before) throw new AppError(404, 'APPOINTMENT_NOT_FOUND');
+      await q.query('UPDATE appointments SET follow_up = $2 WHERE id = $1', [id, followUp || null]);
       await audit(q, ctx, 'FOLLOWUP_SET', { appointmentId: id, cleared: !followUp });
+      // Confirm to the patient when a follow-up is set or changed (not when cleared, and not when nothing changed).
+      if (followUp && followUp !== before.follow_up) await sendFollowUp(q, ctx, id, followUp);
+    });
+    await flush(c);
+    return c.json({ ok: true });
+  });
+
+  // Owner-only: the Google review link used in thank-you texts, and when reminders go out.
+  api.patch('/practice/settings', requireRole('owner'), async (c) => {
+    const b = parse(z.object({
+      googleReviewUrl: z.string().trim().url().max(300).refine((u) => u.startsWith('https://'), 'must start with https://').nullable(),
+      reminderHours: z.array(z.number().int().min(1).max(168)).max(3),
+    }), await c.req.json());
+    const hours = [...new Set(b.reminderHours)].sort((x, y) => y - x);
+    await run(c, async (q, ctx) => {
+      await q.query('UPDATE practices SET google_review_url = $2, reminder_hours = $3 WHERE id = $1', [ctx.practiceId, b.googleReviewUrl, hours]);
+      await audit(q, ctx, 'PRACTICE_SETTINGS', { reminderHours: hours, reviewLinkSet: !!b.googleReviewUrl });
     });
     return c.json({ ok: true });
   });
@@ -232,7 +259,9 @@ export function createApp(deps: AppDeps) {
       durationMin: z.number().int().min(5).max(480), treatment: z.string().trim().min(1).max(120), providerId: uuid.nullable(),
       insurancePlan: z.string().trim().min(1).max(120).nullish(), selfPay: z.boolean().optional(),
     }), await c.req.json());
-    return c.json(await run(c, (q, ctx) => bookAppointment(q, ctx, b)), 201);
+    const booked = await run(c, (q, ctx) => bookAppointment(q, ctx, b));
+    await flush(c);   // confirmation text appears in Messages straight away
+    return c.json(booked, 201);
   });
 
   api.get('/waitlist', async (c) =>

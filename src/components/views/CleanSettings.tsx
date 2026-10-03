@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useHIPAA } from '../../context/HIPAAContext';
 import { usePractice } from '../../context/PracticeContext';
 import { ApiError } from '../../api/client';
-import { useAddProvider, useProviders, useUpdateProvider } from '../../api/hooks';
+import { useAddProvider, useMe, useProviders, useSavePracticeSettings, useUpdateProvider } from '../../api/hooks';
 import { ChangePasswordCard } from '../ui/ChangePassword';
 import { PageHead } from '../ui/Metric';
 
@@ -84,6 +84,53 @@ const ProvidersCard: React.FC = () => {
   );
 };
 
+const REMINDER_CHOICES = [48, 24, 2];
+
+/** Owner-only: the Google review link in thank-you texts, and when appointment reminders go out. */
+const PatientTextsCard: React.FC = () => {
+  const me = useMe();
+  const save = useSavePracticeSettings();
+  const saved = me.data?.practice;
+  const [url, setUrl] = useState<string | null>(null);
+  const [hours, setHours] = useState<number[] | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const curUrl = url ?? saved?.googleReviewUrl ?? '';
+  const curHours = hours ?? saved?.reminderHours ?? [24, 2];
+  const toggle = (h: number) => setHours(curHours.includes(h) ? curHours.filter((x) => x !== h) : [...curHours, h]);
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setMsg(null);
+    save.mutate({ googleReviewUrl: curUrl.trim() || null, reminderHours: curHours }, {
+      onSuccess: () => setMsg({ ok: true, text: 'Saved.' }),
+      onError: (err) => setMsg({ ok: false, text: err instanceof ApiError ? err.message : 'Could not save' }),
+    });
+  };
+  return (
+    <Card title="Patient texts">
+      <p className="text-[12px] text-[#1e2a28]/70 leading-relaxed m-0">
+        Sent automatically to patients who agreed to texts: a confirmation when they book, reminders before the visit, a follow-up confirmation, and a thank-you with your review link when you press Seen.
+      </p>
+      <form onSubmit={submit} className="space-y-2 pt-1">
+        <label className="block text-[12px] font-semibold" htmlFor="review-url">Google review link</label>
+        <input id="review-url" type="url" placeholder="https://g.page/r/…/review" value={curUrl} onChange={(e) => setUrl(e.target.value)} className={inputCls} />
+        {!curUrl.trim() && <p className="text-[11px] text-[#a3533a] m-0">No link yet: thank-you texts will go out without a review request.</p>}
+        <div className="text-[12px] font-semibold pt-1">Send a reminder</div>
+        <div className="flex gap-4 text-[12px]">
+          {REMINDER_CHOICES.map((h) => (
+            <label key={h} className="flex items-center gap-1.5">
+              <input type="checkbox" checked={curHours.includes(h)} onChange={() => toggle(h)} className="accent-[#1e2a28]" />
+              {h} hours before
+            </label>
+          ))}
+        </div>
+        <p className="text-[11px] text-[#1e2a28]/70 m-0">Reminders are only sent between 8:00 AM and 9:00 PM clinic time.</p>
+        <button type="submit" disabled={save.isPending} className="px-3 py-1.5 bg-[#1e2a28] text-[#f4f0e8] text-xs font-semibold disabled:opacity-60">Save</button>
+        {msg && <div role={msg.ok ? 'status' : 'alert'} className={`text-xs font-semibold ${msg.ok ? 'text-emerald-800' : 'text-[#a3533a]'}`}>{msg.text}</div>}
+      </form>
+    </Card>
+  );
+};
+
 export const CleanSettings: React.FC = () => {
   const { practice, role } = usePractice();
   const rooms = practice.providers.filter((p) => p.op).length;
@@ -109,6 +156,7 @@ export const CleanSettings: React.FC = () => {
 
         <ScreenLockCard />
         <ChangePasswordCard />
+        {role === 'owner' && <PatientTextsCard />}
         {role === 'owner' && <ProvidersCard />}
 
         <Card title="Practice details">

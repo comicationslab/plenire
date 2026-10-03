@@ -1,5 +1,6 @@
 import type { Db } from './db/adapter';
 import { dispatchOutbox, type MessageProvider } from './services/messaging';
+import { queueReminders } from './services/notifications';
 import { expireOffers } from './services/recovery';
 
 /**
@@ -15,6 +16,7 @@ export async function runScheduled(db: Db, provider: MessageProvider, concurrenc
       const { id } = ids[next++];
       try {
         await expireOffers(db, id);
+        await queueReminders(db, id);
         await dispatchOutbox(db, id, provider);
       } catch {
         failed++; // logged without details: the error could contain patient data

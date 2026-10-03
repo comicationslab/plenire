@@ -1,4 +1,5 @@
 import type { Queryable } from '../db/adapter';
+import { sendConfirmation } from './notifications';
 import { AppError } from './errors';
 import { audit, type Ctx } from './audit';
 
@@ -108,6 +109,7 @@ export async function bookAppointment(q: Queryable, ctx: Ctx, b: Booking) {
 
   const appointmentId = await createAppointment(q, ctx, { patientId, providerId, startsAt: starts_at, durationMin: b.durationMin, treatment: b.treatment, insurancePlan: b.insurancePlan, selfPay: b.selfPay });
   await audit(q, ctx, 'PATIENT_BOOKED', { appointmentId });
+  await sendConfirmation(q, ctx, appointmentId);   // best effort: no consent / opted out / blocked wording never fails the booking
   const [prov] = await q.query<{ name: string }>('SELECT name FROM providers WHERE id = $1', [providerId]);
   return { appointmentId, patientId, providerName: prov.name, reference: 'PL-' + appointmentId.replace(/-/g, '').slice(0, 8).toUpperCase() };
 }
