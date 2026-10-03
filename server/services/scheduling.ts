@@ -110,6 +110,10 @@ export async function bookAppointment(q: Queryable, ctx: Ctx, b: Booking) {
   if (existing && b.smsConsent) await q.query('UPDATE patients SET sms_consent = true, sms_consent_at = COALESCE(sms_consent_at, now()), sms_opt_out_at = NULL WHERE id = $1 AND sms_opt_out_at IS NULL', [patientId]);
 
   const appointmentId = await createAppointment(q, ctx, { patientId, providerId, startsAt: starts_at, durationMin: b.durationMin, treatment: b.treatment, insurancePlan: b.insurancePlan, selfPay: b.selfPay });
+  // What they just told us is their current insurance. (Not answering leaves what is on file alone.)
+  if (b.selfPay || b.insurancePlan) {
+    await q.query('UPDATE patients SET insurance_plan = $2, self_pay = $3 WHERE id = $1', [patientId, b.selfPay ? null : b.insurancePlan, !!b.selfPay]);
+  }
   await audit(q, ctx, 'PATIENT_BOOKED', { appointmentId });
   await sendConfirmation(q, ctx, appointmentId);   // best effort: no consent / opted out / blocked wording never fails the booking
   const [prov] = await q.query<{ name: string }>('SELECT name FROM providers WHERE id = $1', [providerId]);

@@ -322,6 +322,43 @@ describe(`endpoints behind the screens (${backend()})`, () => {
       assert.equal((await call('POST', `/api/patients/${pid}/messages`, owner, { body: 'Hello there' })).status, 422, 'cannot text without consent');
     });
 
+    it('insurance: booking records the patient\'s current plan; the card shows it; editing needs the password and is logged by field name only', async () => {
+      const mon = new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 10);
+      const book = (time: string, extra: object) => call('POST', '/api/bookings', fd, { firstName: 'Iris', lastName: 'Cover', phone: '+15555554001', newPatient: true, smsConsent: false, date: mon, time, durationMin: 30, treatment: 'Cleaning & Checkup', providerId: null, ...extra });
+      const first = await book('09:00', { insurancePlan: 'Delta Dental PPO' });
+      assert.equal(first.status, 201);
+      const id = first.json.patientId as string;
+      const card = async () => (await call('GET', `/api/patients/${id}`, fd)).json;
+      assert.deepEqual([(await card()).insurancePlan, (await card()).selfPay], ['Delta Dental PPO', false]);
+
+      await book('10:00', {});   // booking again without answering keeps what is on file
+      assert.equal((await card()).insurancePlan, 'Delta Dental PPO');
+      await book('11:00', { selfPay: true });
+      assert.deepEqual([(await card()).insurancePlan, (await card()).selfPay], [null, true], 'a newer answer replaces it');
+
+      const edit = (tok: string, body: any) => call('PATCH', `/api/patients/${id}`, tok, body);
+      assert.equal((await edit(owner, { insurance: { kind: 'plan', name: 'Cigna Dental' } })).json.error.code, 'PASSWORD_REQUIRED');
+      assert.equal((await card()).selfPay, true, 'refused edit changed nothing');
+      const ok = await edit(owner, { insurance: { kind: 'plan', name: 'Cigna Dental' }, password: pw });
+      assert.deepEqual(ok.json.changed, ['insurance']);
+      assert.deepEqual([(await card()).insurancePlan, (await card()).selfPay], ['Cigna Dental', false]);
+
+      const typed = await edit(owner, { insurance: { kind: 'plan', name: 'Local Union Dental Trust' }, password: pw });
+      assert.deepEqual(typed.json.changed, ['insurance'], 'a plan that is not in the list can be typed');
+      assert.equal((await edit(owner, { insurance: { kind: 'plan', name: 'Local Union Dental Trust' }, password: pw })).json.changed.length, 0, 'same plan = no change');
+      assert.equal((await edit(owner, { insurance: { kind: 'plan', name: '   ' }, password: pw })).status, 422);
+      assert.equal((await edit(owner, { insurance: { kind: 'plan', name: 'x'.repeat(121) }, password: pw })).status, 422);
+      assert.equal((await edit(owner, { name: 'Iris Cover', password: pw })).json.changed.length, 0, 'leaving insurance out leaves it alone');
+      assert.equal((await card()).insurancePlan, 'Local Union Dental Trust');
+      assert.ok((await edit(owner, { insurance: null, password: pw })).json.changed.includes('insurance'));
+      assert.deepEqual([(await card()).insurancePlan, (await card()).selfPay], [null, false], 'cleared');
+
+      const logs = await db.admin((q) => q.query<any>("SELECT details FROM audit_log WHERE action = 'PATIENT_UPDATED' AND details->>'patientId' = $1", [id]));
+      assert.ok(logs.length >= 3);
+      assert.ok(logs.every((l: any) => l.details.fields.includes('insurance')));
+      assert.doesNotMatch(JSON.stringify(logs), /Cigna|Union|Delta/, 'the log never contains the plan name');
+    });
+
     it('five wrong passwords lock confirmations for a while (a borrowed signed-in screen cannot guess the password)', async () => {
       // (this person already got one wrong password earlier in these tests; the count is shared with sign-in)
       const codes: string[] = [];

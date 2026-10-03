@@ -76,6 +76,7 @@ export const patientDetailSchema = z.object({
   id: z.string(), name: z.string(), phone: z.string().nullable(), email: z.string().nullable(),
   smsConsent: z.boolean(), smsConsentAt: z.string().nullable(), optedOutAt: z.string().nullable(),
   newPatient: z.boolean(), walkIn: z.boolean(), notes: z.string().nullable(), updatedAt: z.string().nullable(), createdAt: z.string(),
+  insurancePlan: z.string().nullable(), selfPay: z.boolean(),
   appointments: z.array(z.object({
     id: z.string(), startsAt: z.string(), durationMin: z.number(), treatment: z.string(), status: appointmentStatus,
     providerName: z.string(), followUp: z.string().nullable(),

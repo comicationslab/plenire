@@ -107,7 +107,7 @@ export const useUpdatePractice = () =>
 export const useRemovePractice = () => useWrite((v: { id: string; password: string }) => api('POST', `/api/platform/practices/${v.id}/remove`, S.okSchema, { password: v.password }));
 export const useRestorePractice = () => useWrite((id: string) => api('POST', `/api/platform/practices/${id}/restore`, S.okSchema, {}));
 export const useUpdatePatient = () =>
-  useWrite((v: { id: string; password: string; name?: string; phone?: string | null; email?: string | null; notes?: string | null }) => {
+  useWrite((v: { id: string; password: string; name?: string; phone?: string | null; email?: string | null; notes?: string | null; insurance?: { kind: 'plan'; name: string } | { kind: 'self' } | null }) => {
     const { id, ...body } = v;
     return api('PATCH', `/api/patients/${id}`, S.patientUpdateResultSchema, body);
   });

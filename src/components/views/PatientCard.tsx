@@ -3,9 +3,14 @@ import { ApiError } from '../../api/client';
 import { usePatient, useUpdatePatient } from '../../api/hooks';
 import { useHIPAA } from '../../context/HIPAAContext';
 import { usePractice } from '../../context/PracticeContext';
+import { searchInsurancePlans, INSURANCE_PLANS } from '../../config/insurance';
 import { toE164 } from '../../lib/format';
 
 const inputCls = 'w-full h-[35px] px-3 bg-white border border-[#1e2a28]/30 text-xs';
+const NOT_SET = '';
+const SELF = '__self__';
+const OTHER = '__other__';
+const selectCls = 'w-full h-[35px] px-2 bg-white border border-[#1e2a28]/30 text-xs';
 const when = (iso: string | null, tz: string) => (iso ? new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: tz }) : '—');
 
 /**
@@ -20,14 +25,19 @@ export const PatientCard: React.FC<{ patientId: string; onClose: () => void; can
   const p = q.data;
 
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ name: '', phone: '', email: '', notes: '' });
+  const [form, setForm] = useState({ name: '', phone: '', email: '', notes: '', ins: NOT_SET, insOther: '' });
   const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
   const [note, setNote] = useState('');
 
   const startEdit = () => {
     if (!p) return;
-    setForm({ name: p.name, phone: p.phone ?? '', email: p.email ?? '', notes: p.notes ?? '' });
+    const known = p.insurancePlan && INSURANCE_PLANS.includes(p.insurancePlan);
+    setForm({
+      name: p.name, phone: p.phone ?? '', email: p.email ?? '', notes: p.notes ?? '',
+      ins: p.selfPay ? SELF : known ? p.insurancePlan! : p.insurancePlan ? OTHER : NOT_SET,
+      insOther: p.insurancePlan && !known ? p.insurancePlan : '',
+    });
     setPassword(''); setErr(''); setNote(''); setEditing(true);
   };
 
@@ -36,7 +46,10 @@ export const PatientCard: React.FC<{ patientId: string; onClose: () => void; can
     if (!p) return;
     setErr('');
     const phone = form.phone.trim() ? toE164(form.phone) : null;
-    update.mutate({ id: p.id, password, name: form.name.trim(), phone, email: form.email.trim() || null, notes: form.notes.trim() || null }, {
+    const other = form.insOther.trim();
+    if (form.ins === OTHER && !other) return setErr('Type the plan name, or pick one from the list.');
+    const insurance = form.ins === NOT_SET ? null : form.ins === SELF ? { kind: 'self' as const } : { kind: 'plan' as const, name: form.ins === OTHER ? other : form.ins };
+    update.mutate({ id: p.id, password, name: form.name.trim(), phone, email: form.email.trim() || null, notes: form.notes.trim() || null, insurance }, {
       onSuccess: (r) => {
         setEditing(false); setPassword('');
         setNote(!r.changed.length ? 'Nothing changed.' : r.consentReset ? 'Saved. The phone number changed, so texting is off until the patient agrees to texts for the new number.' : 'Saved.');
@@ -45,6 +58,7 @@ export const PatientCard: React.FC<{ patientId: string; onClose: () => void; can
     });
   };
 
+  const insuranceText = !p ? '' : p.selfPay ? 'No insurance (self-pay)' : p.insurancePlan ?? 'Not on file';
   const textStatus = !p ? '' : p.optedOutAt ? 'Opted out (replied STOP)' : p.smsConsent ? `Agreed to texts · ${when(p.smsConsentAt, practice.timezone)}` : 'No texting consent';
 
   return (
@@ -66,6 +80,8 @@ export const PatientCard: React.FC<{ patientId: string; onClose: () => void; can
             <dl className="grid grid-cols-[96px_1fr] gap-y-2 m-0">
               <dt className="text-[#1e2a28]/70">Phone</dt><dd className="m-0 font-semibold tabular-nums">{p.phone ? maskPhone(p.phone) : '—'}</dd>
               <dt className="text-[#1e2a28]/70">Email</dt><dd className="m-0 font-semibold break-all">{p.email ? maskEmail(p.email) : '—'}</dd>
+              {/* A named health plan tied to a patient is protected health information, so it follows the privacy shield like name, phone and email. */}
+              <dt className="text-[#1e2a28]/70">Insurance</dt><dd className="m-0 font-semibold">{privacyShield ? 'Hidden by privacy shield' : insuranceText}</dd>
               <dt className="text-[#1e2a28]/70">Texting</dt><dd className="m-0 font-semibold">{textStatus}</dd>
               <dt className="text-[#1e2a28]/70">Notes</dt><dd className="m-0 whitespace-pre-wrap">{p.notes ? (privacyShield ? 'Hidden by privacy shield' : p.notes) : '—'}</dd>
               {p.updatedAt && (<><dt className="text-[#1e2a28]/70">Last edited</dt><dd className="m-0">{when(p.updatedAt, practice.timezone)}</dd></>)}
@@ -102,6 +118,18 @@ export const PatientCard: React.FC<{ patientId: string; onClose: () => void; can
             <div><label htmlFor="pc-name" className="block text-[11px] font-semibold mb-1">Name</label><input id="pc-name" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></div>
             <div><label htmlFor="pc-phone" className="block text-[11px] font-semibold mb-1">Mobile phone</label><input id="pc-phone" type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className={inputCls} /></div>
             <div><label htmlFor="pc-email" className="block text-[11px] font-semibold mb-1">Email</label><input id="pc-email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className={inputCls} /></div>
+            <div>
+              <label htmlFor="pc-ins" className="block text-[11px] font-semibold mb-1">Insurance plan <span className="font-normal text-[#1e2a28]/70">(plan name only, no member ID)</span></label>
+              <select id="pc-ins" value={form.ins} onChange={(e) => setForm({ ...form, ins: e.target.value })} className={selectCls}>
+                <option value={NOT_SET}>Not on file</option>
+                {searchInsurancePlans('').map((n) => <option key={n} value={n}>{n}</option>)}
+                <option value={OTHER}>Other plan (type the name)…</option>
+                <option value={SELF}>No insurance (self-pay)</option>
+              </select>
+              {form.ins === OTHER && (
+                <input aria-label="Plan name" maxLength={120} value={form.insOther} onChange={(e) => setForm({ ...form, insOther: e.target.value })} placeholder="Plan name" className={`${inputCls} mt-1.5`} />
+              )}
+            </div>
             <div><label htmlFor="pc-notes" className="block text-[11px] font-semibold mb-1">Front-desk notes <span className="font-normal text-[#1e2a28]/70">(no clinical notes)</span></label>
               <textarea id="pc-notes" rows={3} maxLength={500} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full px-3 py-2 bg-white border border-[#1e2a28]/30 text-xs" /></div>
             {form.phone.trim() !== (p.phone ?? '') && p.smsConsent && (

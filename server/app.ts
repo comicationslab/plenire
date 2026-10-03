@@ -220,7 +220,8 @@ export function createApp(deps: AppDeps) {
     return c.json(await run(c, async (q, ctx) => {
       const [p] = await q.query<any>(
         `SELECT id, name, phone, email, sms_consent AS "smsConsent", sms_consent_at AS "smsConsentAt", sms_opt_out_at AS "optedOutAt",
-                new_patient AS "newPatient", walk_in AS "walkIn", notes, updated_at AS "updatedAt", created_at AS "createdAt"
+                new_patient AS "newPatient", walk_in AS "walkIn", notes, updated_at AS "updatedAt", created_at AS "createdAt",
+                insurance_plan AS "insurancePlan", self_pay AS "selfPay"
            FROM patients WHERE id = $1`, [id]);
       if (!p) throw new AppError(404, 'PATIENT_NOT_FOUND');
       const appointments = await q.query(
@@ -241,10 +242,12 @@ export function createApp(deps: AppDeps) {
       phone: z.string().trim().max(30).nullish().refine((v) => !v || v.length >= 7, 'Phone number looks too short'),
       email: z.union([z.string().trim().email().max(200), z.literal('')]).nullish(),
       notes: z.string().max(500).nullish(),
+      // undefined = leave as is; null = clear; { kind: 'self' } = "no insurance"; { kind: 'plan' } = a named plan
+      insurance: z.union([z.object({ kind: z.literal('plan'), name: z.string().trim().min(1).max(120) }), z.object({ kind: z.literal('self') })]).nullish(),
     }), await c.req.json());
     await confirmPassword(db, c.get('ctx').actorId!, b.password);
     return c.json(await run(c, async (q, ctx) => {
-      const [cur] = await q.query<{ name: string; phone: string | null; email: string | null; notes: string | null }>('SELECT name, phone, email, notes FROM patients WHERE id = $1 FOR UPDATE', [id]);
+      const [cur] = await q.query<{ name: string; phone: string | null; email: string | null; notes: string | null; insurance_plan: string | null; self_pay: boolean }>('SELECT name, phone, email, notes, insurance_plan, self_pay FROM patients WHERE id = $1 FOR UPDATE', [id]);
       if (!cur) throw new AppError(404, 'PATIENT_NOT_FOUND');
       const next = {
         name: b.name ?? cur.name,
@@ -252,17 +255,22 @@ export function createApp(deps: AppDeps) {
         email: b.email === undefined ? cur.email : (b.email || null),
         notes: b.notes === undefined ? cur.notes : (b.notes?.trim() || null),
       };
-      const changed = (['name', 'phone', 'email', 'notes'] as const).filter((k) => next[k] !== cur[k]);
+      const ins = b.insurance === undefined
+        ? { plan: cur.insurance_plan, self: cur.self_pay }
+        : { plan: b.insurance?.kind === 'plan' ? b.insurance.name : null, self: b.insurance?.kind === 'self' };
+      const changed: string[] = (['name', 'phone', 'email', 'notes'] as const).filter((k) => next[k] !== cur[k]);
+      if (ins.plan !== cur.insurance_plan || ins.self !== cur.self_pay) changed.push('insurance');
       if (!changed.length) return { ok: true, changed: [] as string[], consentReset: false };
       // Texting consent was given for the OLD number. A new number must opt in again (next booking or a START reply).
       const consentReset = changed.includes('phone');
       await q.query(
         `UPDATE patients SET name = $2, phone = $3, email = $4, notes = $5, updated_at = now(), updated_by = $6,
                 sms_consent = CASE WHEN $7::boolean THEN false ELSE sms_consent END,
-                sms_consent_at = CASE WHEN $7::boolean THEN NULL ELSE sms_consent_at END
-          WHERE id = $1`, [id, next.name, next.phone, next.email, next.notes, ctx.actorId, consentReset]);
+                sms_consent_at = CASE WHEN $7::boolean THEN NULL ELSE sms_consent_at END,
+                insurance_plan = $8, self_pay = $9
+          WHERE id = $1`, [id, next.name, next.phone, next.email, next.notes, ctx.actorId, consentReset, ins.plan, ins.self]);
       await audit(q, ctx, 'PATIENT_UPDATED', { patientId: id, fields: changed, consentReset });   // field names only, never the values
-      return { ok: true, changed: changed as string[], consentReset };
+      return { ok: true, changed, consentReset };
     }));
   });
 
